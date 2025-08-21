@@ -1,0 +1,27 @@
+[project]
+name = "quack"
+version = "0.1.0"
+description = "带缓存和依赖关系的任务执行器"
+readme = "README.md"
+authors = [
+    { name = "许立剑", email = "iven@paraflow.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "loguru>=0.7.3",
+    "mysql-connector-python>=9.3.0",
+    "pydantic-settings>=2.10.1",
+    "pytest>=8.3.5",
+    "pyyaml>=6.0.2",
+    "xdg-base-dirs>=6.0.2",
+]
+
+[project.scripts]
+quack = "quack.__main__:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.uv.sources]
+woof-tools = { workspace = true }

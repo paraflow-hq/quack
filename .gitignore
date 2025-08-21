@@ -1,0 +1,35 @@
+# os generated files
+.DS_Store
+
+.env
+
+# logs and databases
+*.log
+*.sqlite
+
+# files for debugger
+*.sln
+*.csproj
+*.pidb
+*.unityproj
+*.suo
+*.pyc
+
+### VisualStudioCode ###
+.vscode/
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+!.vscode/*.code-snippets
+!.vscode/test-env.json.example
+
+# Local History for Visual Studio Code
+.history/
+
+# Built Visual Studio Code Extensions
+*.vsix
+
+node_modules
+
+__pycache__

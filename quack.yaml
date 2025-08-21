@@ -1,0 +1,28 @@
+app_name: quack
+global_dependencies:
+  # 所有 Target 都依赖的文件，一旦改动，所有缓存失效
+  - name: source:quack
+    type: source
+    paths:
+      - ^.*$
+    excludes:
+      - ^src/.*_test\.py$
+
+scripts:
+  - name: test
+    description: 执行 pytest
+    command: uv run -m quack quack:test
+
+targets:
+  - name: quack:test
+    description: 执行 pytest
+    dependencies:
+      - name: source:quack:test
+        type: source
+        paths:
+          - ^.*$
+    outputs:
+      paths: []
+    operations:
+      build:
+        command: uv run pytest .
