@@ -22,7 +22,8 @@ targets:
         paths:
           - ^.*$
     outputs:
-      paths: []
+      paths:
+        - README.md
     operations:
       build:
         command: uv run pytest .

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import subprocess
+import tempfile
 from collections.abc import Iterable
 
 
@@ -15,5 +16,12 @@ class Archiver:
 
     @staticmethod
     def extract(archive_path: str, dest_path: str = ".") -> None:
-        cmd = f"tar xf {archive_path} -C {dest_path}"
-        _ = subprocess.run(cmd, shell=True, check=True)
+        # Create a temporary directory for extraction
+        with tempfile.TemporaryDirectory() as temp_dir:
+            # 先解压到临时目录
+            cmd_extract = f"tar xf {archive_path} -C {temp_dir}"
+            _ = subprocess.run(cmd_extract, shell=True, check=True)
+
+            # 使用 rsync 同步到目标目录，相同内容的文件不会被覆盖
+            cmd_rsync = f"rsync --recursive --links --checksum {temp_dir}/ {dest_path}/"
+            _ = subprocess.run(cmd_rsync, shell=True, check=True)
