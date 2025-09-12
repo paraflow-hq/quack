@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 
+import os
 import subprocess
+import tempfile
 from dataclasses import dataclass
 from datetime import datetime
 from typing import List, Union
@@ -110,6 +112,22 @@ class OSSClient:
             )
         except subprocess.CalledProcessError as e:
             raise OSSError(f"下载文件失败：{path}", e.stdout, e.stderr)
+
+    def read(self, path: str) -> Union[str, None]:
+        if not self.exists(path):
+            return None
+
+        with tempfile.NamedTemporaryFile(delete=False) as temp_file:
+            temp_path = temp_file.name
+
+        try:
+            self.download(path, temp_path)
+
+            with open(temp_path, "r") as f:
+                return f.read()
+        finally:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
 
     def remove(self, path: str, recursive=False) -> None:
         remove_param = "-rf" if recursive else "-f"

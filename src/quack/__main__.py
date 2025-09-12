@@ -22,8 +22,7 @@ from quack.cli import (
     execute_scripts_parallel,
     execute_target,
 )
-from quack.config import Config, DBConfig, LogLevel
-from quack.db import DB
+from quack.config import Config, LogLevel
 from quack.exceptions import SpecError
 from quack.models.target import TargetExecutionMode
 from quack.runtime import RuntimeState
@@ -42,20 +41,17 @@ def _signal_handler(signum: int, _) -> None:
     sys.exit(1)
 
 
-def exit_handler(db: DB | None, config: Config, app_name: str) -> None:
+def exit_handler(config: Config, app_name: str) -> None:
     CommandManager.get().terminate_all()
     # 退出时定期清理本地缓存
     TargetCacheBackendTypeLocal(config, app_name).clear_expired()
-    if db is not None:
-        db.commit()
-        db.close()
 
 
 @dataclass
 class QuackArgs(argparse.Namespace):
     list_all: bool
     directory: str
-    load_from_job: str
+    load_from_ci: bool
     clear_expired_cache: bool
     remote: bool
     deps_only: bool
@@ -90,8 +86,9 @@ def parse_args() -> argparse.Namespace:
         help="设置工作目录，执行前会先切换到该目录",
     )
     _ = parser.add_argument(
-        "--load-from-job",
-        help="从指定的 job 中加载 target checksum",
+        "--load-from-ci",
+        action="store_true",
+        help="从 CI 中已经编译的缓存中加载 target",
     )
     _ = parser.add_argument(
         "--clear-expired-cache",
@@ -178,16 +175,6 @@ def init_spec(pwd: Path, spec_path: Path, is_nested: bool) -> Spec:
     return spec
 
 
-def init_db(db_config: DBConfig) -> DB | None:
-    return DB(
-        db_config.host,
-        db_config.port,
-        db_config.user,
-        db_config.password,
-        db_config.database,
-    )
-
-
 def get_spec_path(pwd: Path) -> Path:
     while pwd != pwd.parent:
         spec_path = pwd / "quack.yaml"
@@ -228,14 +215,13 @@ def main():
     runtime.setup()
 
     ci_environment = CIEnvironment()
-    db = init_db(config.db) if ci_environment.is_ci else None
 
     spec = init_spec(pwd, spec_path, runtime.is_nested)
 
     # 注册信号和退出处理器
     _ = signal.signal(signal.SIGINT, _signal_handler)  # pyright: ignore[reportUnknownArgumentType]
     _ = signal.signal(signal.SIGTERM, _signal_handler)  # pyright: ignore[reportUnknownArgumentType]
-    _ = atexit.register(exit_handler, db, config, spec.app_name)
+    _ = atexit.register(exit_handler, config, spec.app_name)
 
     if args.clear_expired_cache:
         TargetCacheBackendTypeOSS(config, spec.app_name).clear_expired()
@@ -253,12 +239,12 @@ def main():
         execute_scripts_parallel(args.names, spec)
         sys.exit(0)
 
-    if args.load_from_job:
+    if args.load_from_ci:
         if len(args.names) != 1:
-            logger.error("load-from-job 模式下只能指定一个 Target 名称")
+            logger.error("load-from-ci 模式下只能指定一个 Target 名称")
             sys.exit(1)
         if not ci_environment.is_ci:
-            logger.error("load-from-job 模式仅支持在 CI 环境执行")
+            logger.error("load-from-ci 模式仅支持在 CI 环境执行")
             sys.exit(1)
 
     if args.remote:
@@ -273,7 +259,7 @@ def main():
     if name in spec.scripts:
         execute_script(name, arguments)
     elif name in spec.targets:
-        if args.load_from_job:
+        if args.load_from_ci:
             mode = TargetExecutionMode.LOAD_ONLY
         elif args.deps_only:
             mode = TargetExecutionMode.DEPS_ONLY
@@ -289,9 +275,6 @@ def main():
                 TargetCacheBackendTypeMap[runtime.cache],
                 mode,
                 config,
-                db,
-                ci_environment,
-                job_name=args.load_from_job,
             )
     else:
         logger.error(f"无效的脚本或者 Target 名称：{name}")

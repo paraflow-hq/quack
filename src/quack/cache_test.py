@@ -1,3 +1,4 @@
+import os
 from unittest import mock
 
 from quack.cache import TargetCacheBackendTypeOSS
@@ -34,6 +35,7 @@ class TestTargetCacheBackendTypeOSS:
         assert mock_local_backend.return_value.load.call_count == 1
         assert mock_run.call_count == 3
 
+    @mock.patch.dict(os.environ, {"PATH": "/usr/bin:/bin"}, clear=True)
     @mock.patch("quack.cache.TargetCacheBackendTypeLocal")
     @mock.patch("subprocess.run")
     def test_save(self, mock_run: mock.Mock, mock_local_backend: mock.Mock):
@@ -46,3 +48,24 @@ class TestTargetCacheBackendTypeOSS:
         backend.save(target)
         assert mock_local_backend.return_value.save.call_count == 1
         assert mock_run.call_count == 2
+
+    @mock.patch.dict(
+        os.environ,
+        {
+            "PATH": "/usr/bin:/bin",
+            "GITHUB_SHA": "391562ccc2e3f99ea834d2c0a6bc7bc7799c0312",
+        },
+        clear=True,
+    )
+    @mock.patch("quack.cache.TargetCacheBackendTypeLocal")
+    @mock.patch("subprocess.run")
+    def test_save_with_ci(self, mock_run: mock.Mock, mock_local_backend: mock.Mock):
+        config = Config.model_construct()
+        spec = Spec.get()
+        target = spec.targets["quack"]
+        target._checksum_value = ""
+        backend = TargetCacheBackendTypeOSS(config, spec.app_name)
+
+        backend.save(target)
+        assert mock_local_backend.return_value.save.call_count == 1
+        assert mock_run.call_count == 3

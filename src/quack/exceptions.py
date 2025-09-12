@@ -8,7 +8,3 @@ class ConfigError(Exception):
 
 class SpecError(Exception):
     pass
-
-
-class DBNotFoundError(Exception):
-    pass
