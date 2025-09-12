@@ -12,8 +12,7 @@ from typing import TYPE_CHECKING
 from loguru import logger
 
 from quack.config import Config
-from quack.db import DB
-from quack.exceptions import DBNotFoundError, SpecError
+from quack.exceptions import SpecError
 from quack.models.command import Command
 from quack.models.dependency import (
     DependencyType,
@@ -22,7 +21,6 @@ from quack.models.dependency import (
     DependencyTypeTarget,
     DependencyTypeVariable,
 )
-from quack.utils.ci_environment import CIEnvironment
 from quack.utils.oss import OSSError
 
 if TYPE_CHECKING:
@@ -160,26 +158,6 @@ class Target:
         except KeyError:
             logger.critical(f"未找到 Target {name}")
             sys.exit(1)
-
-    @staticmethod
-    def get_by_job(
-        db: DB,
-        ci_environment: CIEnvironment,
-        app_name: str,
-        job_name: str,
-        target_name: str,
-    ) -> Target:
-        """从数据库加载并执行指定job的target"""
-        target_checksum = db.query_checksum(
-            app_name, ci_environment.commit_sha, job_name, target_name
-        )
-        if target_checksum is None:
-            raise DBNotFoundError(
-                f"数据库中未找到对应的 Checksum，Job Name: {job_name}, Target Name: {target_name}, Commit SHA: {ci_environment.commit_sha}"
-            )
-        target = Target.get_by_name(target_name)
-        target.checksum_value = target_checksum.checksum
-        return target
 
     def compute_checksum(self) -> str:
         hash_tuple = [dep.checksum_value for dep in self.dependencies]

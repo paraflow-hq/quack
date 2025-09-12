@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -10,16 +11,13 @@ from subprocess import CalledProcessError
 
 from loguru import logger
 
-from quack.cache import TargetCacheBackendType
+from quack.cache import TargetCacheBackendType, TargetCacheBackendTypeOSS
 from quack.config import Config
 from quack.consts import SERVE_BASE_PATH
-from quack.db import DB, TargetChecksum
-from quack.exceptions import DBNotFoundError
 from quack.models.script import Script
 from quack.models.target import Target, TargetExecutionMode
 from quack.services.command_manager import CommandManager
 from quack.spec import Spec
-from quack.utils.ci_environment import CIEnvironment
 
 
 def execute_scripts_parallel(names: list[str], spec: Spec) -> None:
@@ -78,39 +76,22 @@ def execute_target(
     cache_backend: type[TargetCacheBackendType],
     mode: TargetExecutionMode,
     config: Config,
-    db: DB | None,
-    ci_environment: CIEnvironment,
-    job_name: str,
 ) -> None:
+    target = Target.get_by_name(name)
     if mode == TargetExecutionMode.LOAD_ONLY:
-        assert db
-        try:
-            target = Target.get_by_job(db, ci_environment, app_name, job_name, name)
-        except DBNotFoundError as e:
-            logger.error(e)
+        oss_backend = TargetCacheBackendTypeOSS(config, app_name)
+        commit_metadata_path = oss_backend.get_commit_metadata_path(target)
+        metadata = oss_backend.oss_client.read(commit_metadata_path)
+        if metadata is None:
+            logger.error(f"加载失败，未找到 Target {name} 的缓存")
             sys.exit(1)
-    else:
-        target = Target.get_by_name(name)
+        target.checksum_value = json.loads(metadata)["target_checksum"]
 
     try:
         target.execute(config, cache_backend, mode)
     except CalledProcessError:
         logger.error(f"Target {name} 执行失败")
         sys.exit(1)
-
-    # Merge Train 执行完毕后，将构建的 checksum 存入数据库，以供其他流水线共享缓存
-    if db and ci_environment.is_ci and ci_environment.is_merge_group:
-        db.record_checksum(
-            TargetChecksum(
-                app_name=app_name,
-                commit_sha=ci_environment.commit_sha,
-                mr_iid=ci_environment.pr_id,
-                pipeline_id=ci_environment.pipeline_id,
-                job_name=ci_environment.job_name,
-                target_name=target.name,
-                checksum=target.checksum_value,
-            )
-        )
 
 
 def execute_remote(name: str, mode: TargetExecutionMode, config: Config):

@@ -8,13 +8,14 @@ from datetime import datetime, timedelta
 from typing import final, override
 
 from loguru import logger
-from xdg_base_dirs import xdg_cache_home, xdg_config_home
+from xdg_base_dirs import xdg_cache_home
 
 from quack.config import Config
-from quack.consts import CACHE_CHECKSUM_FILENAME, SERVE_BASE_PATH
+from quack.consts import CACHE_METADATA_FILENAME, SERVE_BASE_PATH
 from quack.exceptions import ChecksumError
 from quack.models.target import Target
 from quack.utils.archiver import Archiver
+from quack.utils.ci_environment import CIEnvironment
 from quack.utils.metadata import Metadata
 from quack.utils.oss import OSSClient
 
@@ -52,15 +53,15 @@ class TargetCacheBackendTypeLocal:
     def get_archive_path(self, target: Target) -> str:
         return os.path.join(self.get_cache_path(target), target.cache_archive_filename)
 
-    def get_checksum_path(self, target: Target) -> str:
-        return os.path.join(self.get_cache_path(target), CACHE_CHECKSUM_FILENAME)
+    def get_metadata_path(self, target: Target) -> str:
+        return os.path.join(self.get_cache_path(target), CACHE_METADATA_FILENAME)
 
     def exists(self, target: Target) -> bool:
-        return os.path.exists(self.get_checksum_path(target))
+        return os.path.exists(self.get_metadata_path(target))
 
     def load(self, target: Target) -> None:
-        # ossutil 自带 crc64 校验，不再需要 checksum，checksum 文件仅作为最后访问时间的标识
-        # Checksummer.verify(self.get_archive_path(target), self.get_checksum_path(target))
+        # ossutil 自带 crc64 校验，不再需要 checksum，metadata 文件仅作为最后访问时间的标识
+        # Checksummer.verify(self.get_archive_path(target), self.get_metadata_path(target))
         logger.info(f"正在从本地加载 Target {target.name} 的缓存...")
         Archiver.extract(self.get_archive_path(target))
 
@@ -71,9 +72,14 @@ class TargetCacheBackendTypeLocal:
         logger.debug(f"正在保存缓存到本地路径 {archive_path}...")
 
         Archiver.archive(target.outputs.paths, archive_path)
-        Metadata.generate(self.get_archive_path(target), self.get_checksum_path(target))
+        Metadata.generate(
+            self.get_archive_path(target),
+            self.get_metadata_path(target),
+            target_checksum=target.checksum_value,
+            commit_sha=CIEnvironment().commit_sha,
+        )
         # Checksummer.generate(
-        #     self.get_archive_path(target), self.get_checksum_path(target)
+        #     self.get_archive_path(target), self.get_metadata_path(target)
         # )
 
     def clear_expired(self) -> None:
@@ -94,6 +100,9 @@ class TargetCacheBackendTypeLocal:
             logger.info("清理过期缓存...")
             for root, dirs, _ in os.walk(self._cache_base_path):
                 for d in dirs:
+                    # 忽略 Target 以外的目录
+                    if ":" not in d:
+                        continue
                     full_path = os.path.join(root, d)
                     atime = datetime.fromtimestamp(os.path.getatime(full_path))
                     if (datetime.now() - atime).days > self.CACHE_EXPIRE_DAYS:
@@ -143,17 +152,27 @@ class TargetCacheBackendTypeOSS:
     def get_archive_path(self, target: Target) -> str:
         return f"{self.get_cache_path(target)}/{target.cache_archive_filename}"
 
-    def get_checksum_path(self, target: Target) -> str:
-        return f"{self.get_cache_path(target)}/{CACHE_CHECKSUM_FILENAME}"
+    def get_metadata_path(self, target: Target) -> str:
+        return f"{self.get_cache_path(target)}/{CACHE_METADATA_FILENAME}"
+
+    def get_commits_path(self) -> str:
+        commit_sha = CIEnvironment().commit_sha
+        if commit_sha:
+            return os.path.join(self._cache_base_path, "_commits", commit_sha)
+        else:
+            return ""
+
+    def get_commit_metadata_path(self, target: Target) -> str:
+        return os.path.join(self.get_commits_path(), f"{target.name}.json")
 
     def exists(self, target: Target) -> bool:
-        return self.oss_client.exists(self.get_checksum_path(target))
+        return self.oss_client.exists(self.get_metadata_path(target))
 
     def update_access_time(self, target: Target) -> None:
-        """重新上传一次 checksum 文件，来标识其被访问过"""
+        """重新上传一次 metadata 文件，来标识其被访问过"""
         self.oss_client.upload(
-            self.local_backend.get_checksum_path(target),
-            self.get_checksum_path(target),
+            self.local_backend.get_metadata_path(target),
+            self.get_metadata_path(target),
             force=True,
         )
 
@@ -172,7 +191,7 @@ class TargetCacheBackendTypeOSS:
             self.get_archive_path(target), self.local_backend.get_archive_path(target)
         )
         self.oss_client.download(
-            self.get_checksum_path(target), self.local_backend.get_checksum_path(target)
+            self.get_metadata_path(target), self.local_backend.get_metadata_path(target)
         )
         self.local_backend.load(target)
         if update_access_time:
@@ -186,21 +205,28 @@ class TargetCacheBackendTypeOSS:
             self.local_backend.get_archive_path(target), archive_path
         )
         self.oss_client.upload(
-            self.local_backend.get_checksum_path(target), self.get_checksum_path(target)
+            self.local_backend.get_metadata_path(target), self.get_metadata_path(target)
         )
+
+        # 记录成功执行的 target metadata，方便根据 commit sha 进行 load
+        if self.get_commits_path():
+            self.oss_client.upload(
+                self.local_backend.get_metadata_path(target),
+                self.get_commit_metadata_path(target),
+            )
 
     def clear_expired(self) -> None:
         logger.info("清理过期缓存...")
         file_metadatas = self.oss_client.filter_files(
             self._cache_base_path,
-            include=[CACHE_CHECKSUM_FILENAME],
+            include=[CACHE_METADATA_FILENAME],
             exclude=[],
         )
         for m in file_metadatas:
             if datetime.now() - m.modified_time > timedelta(
                 days=self.CACHE_EXPIRE_DAYS
             ):
-                cache_dir = m.path[: -len(CACHE_CHECKSUM_FILENAME)]
+                cache_dir = m.path[: -len(CACHE_METADATA_FILENAME)]
                 assert cache_dir.startswith(self._cache_base_path)
                 logger.info(f"正在清理过期缓存 {cache_dir}...")
                 self.oss_client.remove(cache_dir, recursive=True)

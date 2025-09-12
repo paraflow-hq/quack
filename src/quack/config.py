@@ -22,14 +22,6 @@ class LogLevel(Enum):
     ERROR = "ERROR"
 
 
-class DBConfig(BaseSettings):
-    host: str = "localhost"
-    port: int = 3306
-    database: str = "quack"
-    user: str = "quack"
-    password: str = "quack"
-
-
 class OSSConfig(BaseSettings):
     prefix: str = "oss://yfd-wukong-test/app"
     endpoint: str = ""
@@ -44,7 +36,6 @@ class Config(BaseSettings):
     remote_root: str = ""
     cache: str = "dev"
     log_level: LogLevel = LogLevel.INFO
-    db: DBConfig = DBConfig()
     oss: OSSConfig = OSSConfig()
 
     model_config: ClassVar[SettingsConfigDict] = SettingsConfigDict(
