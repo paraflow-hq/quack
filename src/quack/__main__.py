@@ -51,7 +51,7 @@ def exit_handler(config: Config, app_name: str) -> None:
 class QuackArgs(argparse.Namespace):
     list_all: bool
     directory: str
-    load_from_ci: bool
+    load_only: bool
     clear_expired_cache: bool
     remote: bool
     deps_only: bool
@@ -86,9 +86,14 @@ def parse_args() -> argparse.Namespace:
         help="设置工作目录，执行前会先切换到该目录",
     )
     _ = parser.add_argument(
-        "--load-from-ci",
+        "--save-for-commit",
         action="store_true",
-        help="从 CI 中已经编译的缓存中加载 target",
+        help="将产物保存到缓存中，以便 CI 按 commit sha 加载",
+    )
+    _ = parser.add_argument(
+        "--load-only",
+        action="store_true",
+        help="不执行 Target，而是从 CI 中已经编译的缓存中按 commit sha 加载 target",
     )
     _ = parser.add_argument(
         "--clear-expired-cache",
@@ -239,12 +244,12 @@ def main():
         execute_scripts_parallel(args.names, spec)
         sys.exit(0)
 
-    if args.load_from_ci:
+    if args.load_only:
         if len(args.names) != 1:
-            logger.error("load-from-ci 模式下只能指定一个 Target 名称")
+            logger.error("load-only 模式下只能指定一个 Target 名称")
             sys.exit(1)
         if not ci_environment.is_ci:
-            logger.error("load-from-ci 模式仅支持在 CI 环境执行")
+            logger.error("load-only 模式仅支持在 CI 环境执行")
             sys.exit(1)
 
     if args.remote:
@@ -259,7 +264,7 @@ def main():
     if name in spec.scripts:
         execute_script(name, arguments)
     elif name in spec.targets:
-        if args.load_from_ci:
+        if args.load_only:
             mode = TargetExecutionMode.LOAD_ONLY
         elif args.deps_only:
             mode = TargetExecutionMode.DEPS_ONLY

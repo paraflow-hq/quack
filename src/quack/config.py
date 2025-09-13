@@ -37,6 +37,7 @@ class Config(BaseSettings):
     cache: str = "dev"
     log_level: LogLevel = LogLevel.INFO
     oss: OSSConfig = OSSConfig()
+    save_for_load: bool = False
 
     model_config: ClassVar[SettingsConfigDict] = SettingsConfigDict(
         env_nested_delimiter="__",
