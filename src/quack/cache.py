@@ -11,7 +11,7 @@ from loguru import logger
 from xdg_base_dirs import xdg_cache_home
 
 from quack.config import Config
-from quack.consts import CACHE_METADATA_FILENAME, SERVE_BASE_PATH
+from quack.consts import CACHE_METADATA_FILENAME
 from quack.exceptions import ChecksumError
 from quack.models.target import Target
 from quack.utils.archiver import Archiver
@@ -261,32 +261,11 @@ class TargetCacheBackendTypeDev(TargetCacheBackendTypeOSS):
             super().load(target, update_access_time)
 
 
-class TargetCacheBackendTypeServe(TargetCacheBackendTypeDev):
-    """使用 remote 模式时，开发机端使用该 Backend，除了正常执行之外，还会将产物保存到临时目录，以便 rsync 回传"""
-
-    NAME: str = "serve"
-
-    def __init__(self, config: Config, app_name: str) -> None:
-        super().__init__(config, app_name)
-        os.makedirs(SERVE_BASE_PATH, exist_ok=True)
-
-    @override
-    def load(self, target: Target, update_access_time: bool = True) -> None:
-        super().load(target, update_access_time)
-        Archiver.extract(self.local_backend.get_archive_path(target), SERVE_BASE_PATH)
-
-    @override
-    def save(self, target: Target) -> None:
-        super().save(target)
-        Archiver.extract(self.local_backend.get_archive_path(target), SERVE_BASE_PATH)
-
-
 TargetCacheBackendType = (
     TargetCacheBackendTypeRaw
     | TargetCacheBackendTypeLocal
     | TargetCacheBackendTypeOSS
     | TargetCacheBackendTypeDev
-    | TargetCacheBackendTypeServe
 )
 
 TargetCacheBackendTypeMap: dict[str, type[TargetCacheBackendType]] = {
@@ -296,7 +275,6 @@ TargetCacheBackendTypeMap: dict[str, type[TargetCacheBackendType]] = {
         TargetCacheBackendTypeLocal,
         TargetCacheBackendTypeOSS,
         TargetCacheBackendTypeDev,
-        TargetCacheBackendTypeServe,
     ]
 }
 

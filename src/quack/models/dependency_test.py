@@ -41,15 +41,15 @@ class TestDependencyTypeSource:
             d.validate()
         assert "以 ^ 开头" in str(exc_info.value)
 
-    @mock.patch("quack.runtime.RuntimeState")
-    def test_get_matched_files(self, mock_runtime, mock_dependency):
+    @mock.patch("quack.utils.ci_environment.CIEnvironment")
+    def test_get_matched_files(self, mock_ci_environment, mock_dependency):
         """测试文件匹配，包括 git 管理的文件和未管理的文件"""
         # CI 环境下只考虑 git 管理的文件
-        mock_runtime.get.return_value.is_ci = True
+        mock_ci_environment.return_value.is_ci = True
         assert mock_dependency.get_matched_files() == ["src/quack/__init__.py"]
 
         # 非 CI 环境下，同时考虑未加入 git 管理的文件
-        mock_runtime.get.return_value.is_ci = False
+        mock_ci_environment.return_value.is_ci = False
         assert mock_dependency.get_matched_files() == ["src/quack/__init__.py"]
 
         # 测试 excludes 为空的情况
@@ -59,11 +59,13 @@ class TestDependencyTypeSource:
             "src/quack/__init__.py",
         ]
 
-    @mock.patch("quack.runtime.RuntimeState")
+    @mock.patch("quack.utils.ci_environment.CIEnvironment")
     @mock.patch("subprocess.check_output")
-    def test_get_matched_files_with_untracked(self, mock_check_output, mock_runtime):
+    def test_get_matched_files_with_untracked(
+        self, mock_check_output, mock_ci_environment
+    ):
         """测试非 CI 环境下包含未跟踪的文件"""
-        mock_runtime.get.return_value.is_ci = False
+        mock_ci_environment.return_value.is_ci = False
         mock_check_output.return_value = (
             "src/quack/__init__.py\nREADME.md\nsrc/quack/new_file.py\n"
         )
@@ -82,11 +84,13 @@ class TestDependencyTypeSource:
                 "src/quack/new_file.py",
             ]
 
-    @mock.patch("quack.runtime.RuntimeState")
+    @mock.patch("quack.utils.ci_environment.CIEnvironment")
     @mock.patch("subprocess.check_output")
-    def test_get_matched_files_with_deleted(self, mock_check_output, mock_runtime):
+    def test_get_matched_files_with_deleted(
+        self, mock_check_output, mock_ci_environment
+    ):
         """测试非 CI 环境下处理已删除的文件"""
-        mock_runtime.get.return_value.is_ci = False
+        mock_ci_environment.return_value.is_ci = False
         mock_check_output.return_value = (
             "src/quack/__init__.py\nscripts/quack/deleted.py\n"
         )
@@ -103,9 +107,9 @@ class TestDependencyTypeSource:
         with mock.patch("os.path.exists", lambda x: x != "src/quack/deleted.py"):
             assert d.get_matched_files() == ["src/quack/__init__.py"]
 
-    @mock.patch("quack.runtime.RuntimeState")
-    def test_checksum_value(self, mock_runtime, mock_dependency):
-        mock_runtime.get.return_value.is_ci = True
+    @mock.patch("quack.utils.ci_environment.CIEnvironment")
+    def test_checksum_value(self, mock_ci_environment, mock_dependency):
+        mock_ci_environment.return_value.is_ci = True
         result = [("src/quack/__init__.py", hashlib.sha256().hexdigest())]
         assert (
             mock_dependency.checksum_value

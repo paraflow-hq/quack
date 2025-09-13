@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from enum import Enum
 from typing import ClassVar, override
 
@@ -32,8 +33,6 @@ class OSSConfig(BaseSettings):
 
 
 class Config(BaseSettings):
-    remote_host: str = ""
-    remote_root: str = ""
     cache: str = "dev"
     log_level: LogLevel = LogLevel.INFO
     oss: OSSConfig = OSSConfig()
@@ -67,6 +66,10 @@ class Config(BaseSettings):
             dotenv_settings,
             YamlConfigSettingsSource(settings_cls),
         )
+
+    def setup_runtime(self):
+        """为子进程设置环境变量"""
+        os.environ["QUACK_CACHE"] = self.cache
 
 
 if __name__ == "__main__":
