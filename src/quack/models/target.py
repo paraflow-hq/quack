@@ -181,7 +181,7 @@ class Target:
     ) -> None:
         logger.info(f"正在执行 Target {self.name}...")
 
-        from quack.cache import TargetCache, TargetCacheBackendTypeServe
+        from quack.cache import TargetCache
 
         logger.info(f"Target {self.name} Checksum 值：{self.checksum_value}")
         logger.info(f"正在查找 Target {self.name} 的缓存...")
@@ -199,17 +199,11 @@ class Target:
                 logger.error("未找到缓存，无法进行加载")
                 sys.exit(1)
         else:
-            # Serve 模式下，即使缓存存在，也生成依赖项，以便回传给客户端
-            if cache_backend == TargetCacheBackendTypeServe:
-                self.prepare_deps(config, cache_backend)
-
             if not cache_exists:
                 logger.info(
                     f"未找到对应的缓存，开始重新生成缓存：{self.operations.build.command}"
                 )
-                # 跳过依赖的执行
-                if cache_backend != TargetCacheBackendTypeServe:
-                    self.prepare_deps(config, cache_backend)
+                self.prepare_deps(config, cache_backend)
                 self.operations.build.execute()
 
             if cache_exists:

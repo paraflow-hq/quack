@@ -13,6 +13,7 @@ from loguru import logger
 from quack.exceptions import SpecError
 from quack.models.command import Command
 from quack.utils.checksummer import generate_sha256sum
+from quack.utils.ci_environment import CIEnvironment
 
 
 @dataclass
@@ -42,14 +43,12 @@ class DependencyTypeSource:
 
     def get_matched_files(self) -> list[str]:
         """找出在 git 管理中，且符合条件的文件列表"""
-        from quack.runtime import RuntimeState
-
         path_patterns = [re.compile(p) for p in self.paths]
         exclude_patterns = [re.compile(p) for p in self.excludes]
 
         cmd = ["git", "ls-files"]
         # 开发机环境下，同时计算未加入到 git 管理的文件
-        if not RuntimeState.get().is_ci:
+        if not CIEnvironment().is_ci:
             cmd.extend(["-co", "--exclude-standard"])
 
         tracked_files = subprocess.check_output(cmd, text=True).splitlines()

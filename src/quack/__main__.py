@@ -16,16 +16,10 @@ from quack.cache import (
     TargetCacheBackendTypeMap,
     TargetCacheBackendTypeOSS,
 )
-from quack.cli import (
-    execute_remote,
-    execute_script,
-    execute_scripts_parallel,
-    execute_target,
-)
+from quack.cli import execute_script, execute_scripts_parallel, execute_target
 from quack.config import Config, LogLevel
 from quack.exceptions import SpecError
 from quack.models.target import TargetExecutionMode
-from quack.runtime import RuntimeState
 from quack.services.command_manager import CommandManager
 from quack.spec import Spec
 from quack.utils.ci_environment import CIEnvironment
@@ -53,9 +47,7 @@ class QuackArgs(argparse.Namespace):
     directory: str
     load_only: bool
     clear_expired_cache: bool
-    remote: bool
     deps_only: bool
-    test_features: str
     names: list[str]
     parallel: bool
     cache: str
@@ -64,10 +56,7 @@ class QuackArgs(argparse.Namespace):
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="Quack - 带缓存的构建执行工具",
-        epilog="📖 使用手册: https://www.notion.so/kanyun/Quack-15866f1452e280b89209e0ef93ae415e?pvs=4",
-    )
+    parser = argparse.ArgumentParser(description="Quack - 带缓存的构建执行工具")
     _ = parser.add_argument(
         "--list",
         "-l",
@@ -101,19 +90,9 @@ def parse_args() -> argparse.Namespace:
         help="清理过期的缓存",
     )
     _ = parser.add_argument(
-        "--remote",
-        action="store_true",
-        help="远程执行 Target",
-    )
-    _ = parser.add_argument(
         "--deps-only",
         action="store_true",
         help="仅准备依赖，不执行 Target 本身",
-    )
-    _ = parser.add_argument(
-        "--test-features",
-        choices=["default", "on"],
-        help="如果设置为 on，执行测试时会开启所有开关",
     )
     _ = parser.add_argument(
         "names",
@@ -163,20 +142,14 @@ def print_available_items(spec: Spec, list_targets: bool) -> None:
         for name, target in sorted(spec.targets.items()):
             print(f"  *  {name:32} - {target.description}")
 
-    print()
-    print(
-        "📖 Quack 使用手册: https://www.notion.so/kanyun/Quack-15866f1452e280b89209e0ef93ae415e?pvs=4\n"
-    )
 
-
-def init_spec(pwd: Path, spec_path: Path, is_nested: bool) -> Spec:
+def init_spec(pwd: Path, spec_path: Path) -> Spec:
     spec = Spec(pwd, spec_path)
-    if not is_nested:
-        try:
-            spec.validate()
-        except SpecError as e:
-            logger.error(f"配置文件错误: {e}")
-            sys.exit(1)
+    try:
+        spec.validate()
+    except SpecError as e:
+        logger.error(f"配置文件错误: {e}")
+        sys.exit(1)
     return spec
 
 
@@ -205,23 +178,15 @@ def main():
 
     # 读取配置
     config = Config()
+    config.setup_runtime()
 
     log_level = args.log_level or config.log_level.value
     _ = logger.remove()
     _ = logger.add(sys.stderr, level=log_level)
 
-    # Runtime 需要最先初始化，以便子进程能够正确读取环境变量
-    runtime = RuntimeState(
-        pwd,
-        dict(os.environ),
-        args.cache or config.cache,
-        args.test_features,
-    )
-    runtime.setup()
-
     ci_environment = CIEnvironment()
 
-    spec = init_spec(pwd, spec_path, runtime.is_nested)
+    spec = init_spec(pwd, spec_path)
 
     # 注册信号和退出处理器
     _ = signal.signal(signal.SIGINT, _signal_handler)  # pyright: ignore[reportUnknownArgumentType]
@@ -252,13 +217,6 @@ def main():
             logger.error("load-only 模式仅支持在 CI 环境执行")
             sys.exit(1)
 
-    if args.remote:
-        if not config.remote_host:
-            logger.error(
-                "远程执行模式下需要在配置文件中指定远程主机名，详见 notion 文档"
-            )
-            sys.exit(1)
-
     name: str = args.names[0]
     arguments: list[str] = args.names[1:]
     if name in spec.scripts:
@@ -271,16 +229,13 @@ def main():
         else:
             mode = TargetExecutionMode.NORMAL
 
-        if args.remote:
-            execute_remote(name, mode, config)
-        else:
-            execute_target(
-                spec.app_name,
-                name,
-                TargetCacheBackendTypeMap[runtime.cache],
-                mode,
-                config,
-            )
+        execute_target(
+            spec.app_name,
+            name,
+            TargetCacheBackendTypeMap[args.cache or config.cache],
+            mode,
+            config,
+        )
     else:
         logger.error(f"无效的脚本或者 Target 名称：{name}")
         sys.exit(1)

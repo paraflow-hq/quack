@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
-import subprocess
 import sys
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from subprocess import CalledProcessError
@@ -13,7 +11,6 @@ from loguru import logger
 
 from quack.cache import TargetCacheBackendType, TargetCacheBackendTypeOSS
 from quack.config import Config
-from quack.consts import SERVE_BASE_PATH
 from quack.models.script import Script
 from quack.models.target import Target, TargetExecutionMode
 from quack.services.command_manager import CommandManager
@@ -89,22 +86,6 @@ def execute_target(
 
     try:
         target.execute(config, cache_backend, mode)
-    except CalledProcessError:
-        logger.error(f"Target {name} 执行失败")
-        sys.exit(1)
-
-
-def execute_remote(name: str, mode: TargetExecutionMode, config: Config):
-    cmd = ["quack-remote", name]
-    if mode == TargetExecutionMode.DEPS_ONLY:
-        cmd.append("--deps-only")
-
-    env = dict(os.environ)
-    env["REMOTE_HOST"] = config.remote_host
-    env["REMOTE_ROOT"] = config.remote_root
-    env["SERVE_BASE_PATH"] = SERVE_BASE_PATH
-    try:
-        _ = subprocess.run(cmd, env=env, check=True)
     except CalledProcessError:
         logger.error(f"Target {name} 执行失败")
         sys.exit(1)
