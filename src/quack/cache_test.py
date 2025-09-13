@@ -59,8 +59,9 @@ class TestTargetCacheBackendTypeOSS:
     )
     @mock.patch("quack.cache.TargetCacheBackendTypeLocal")
     @mock.patch("subprocess.run")
-    def test_save_with_ci(self, mock_run: mock.Mock, mock_local_backend: mock.Mock):
+    def test_save_for_load(self, mock_run: mock.Mock, mock_local_backend: mock.Mock):
         config = Config.model_construct()
+        config.save_for_load = True
         spec = Spec.get()
         target = spec.targets["quack"]
         target._checksum_value = ""

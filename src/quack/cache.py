@@ -209,7 +209,7 @@ class TargetCacheBackendTypeOSS:
         )
 
         # 记录成功执行的 target metadata，方便根据 commit sha 进行 load
-        if self.get_commits_path():
+        if self._config.save_for_load and self.get_commits_path():
             self.oss_client.upload(
                 self.local_backend.get_metadata_path(target),
                 self.get_commit_metadata_path(target),
