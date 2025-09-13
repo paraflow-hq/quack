@@ -117,7 +117,7 @@ class OSSClient:
         if not self.exists(path):
             return None
 
-        with tempfile.NamedTemporaryFile(delete=False) as temp_file:
+        with tempfile.NamedTemporaryFile() as temp_file:
             temp_path = temp_file.name
 
         try:
