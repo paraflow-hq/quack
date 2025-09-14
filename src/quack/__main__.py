@@ -178,6 +178,7 @@ def main():
 
     # 读取配置
     config = Config()
+    config.cache = args.cache or config.cache
     config.setup_runtime()
 
     log_level = args.log_level or config.log_level.value
@@ -232,7 +233,7 @@ def main():
         execute_target(
             spec.app_name,
             name,
-            TargetCacheBackendTypeMap[args.cache or config.cache],
+            TargetCacheBackendTypeMap[config.cache],
             mode,
             config,
         )
