@@ -15,6 +15,7 @@ from quack.models.script import Script
 from quack.models.target import Target, TargetExecutionMode
 from quack.services.command_manager import CommandManager
 from quack.spec import Spec
+from quack.utils.ci_environment import CIEnvironment
 
 
 def execute_scripts_parallel(names: list[str], spec: Spec) -> None:
@@ -75,9 +76,9 @@ def execute_target(
     config: Config,
 ) -> None:
     target = Target.get_by_name(name)
+    oss_backend = TargetCacheBackendTypeOSS(config, app_name)
+    commit_metadata_path = oss_backend.get_commit_metadata_path(target)
     if mode == TargetExecutionMode.LOAD_ONLY:
-        oss_backend = TargetCacheBackendTypeOSS(config, app_name)
-        commit_metadata_path = oss_backend.get_commit_metadata_path(target)
         metadata = oss_backend.oss_client.read(commit_metadata_path)
         if metadata is None:
             logger.error(f"加载失败，未找到 Target {name} 的缓存")
@@ -89,3 +90,10 @@ def execute_target(
     except CalledProcessError:
         logger.error(f"Target {name} 执行失败")
         sys.exit(1)
+
+    # 记录成功执行的 target metadata，方便根据 commit sha 进行 load
+    if config.save_for_load and CIEnvironment.is_ci:
+        oss_backend.oss_client.upload(
+            oss_backend.local_backend.get_metadata_path(target),
+            oss_backend.get_commit_metadata_path(target),
+        )
