@@ -48,25 +48,3 @@ class TestTargetCacheBackendTypeOSS:
         backend.save(target)
         assert mock_local_backend.return_value.save.call_count == 1
         assert mock_run.call_count == 2
-
-    @mock.patch.dict(
-        os.environ,
-        {
-            "PATH": "/usr/bin:/bin",
-            "GITHUB_SHA": "391562ccc2e3f99ea834d2c0a6bc7bc7799c0312",
-        },
-        clear=True,
-    )
-    @mock.patch("quack.cache.TargetCacheBackendTypeLocal")
-    @mock.patch("subprocess.run")
-    def test_save_for_load(self, mock_run: mock.Mock, mock_local_backend: mock.Mock):
-        config = Config.model_construct()
-        config.save_for_load = True
-        spec = Spec.get()
-        target = spec.targets["quack"]
-        target._checksum_value = ""
-        backend = TargetCacheBackendTypeOSS(config, spec.app_name)
-
-        backend.save(target)
-        assert mock_local_backend.return_value.save.call_count == 1
-        assert mock_run.call_count == 3

@@ -155,7 +155,7 @@ class TargetCacheBackendTypeOSS:
     def get_metadata_path(self, target: Target) -> str:
         return f"{self.get_cache_path(target)}/{CACHE_METADATA_FILENAME}"
 
-    def get_commits_path(self) -> str:
+    def get_commit_path(self) -> str:
         commit_sha = CIEnvironment().commit_sha
         if commit_sha:
             return os.path.join(self._cache_base_path, "_commits", commit_sha)
@@ -163,7 +163,7 @@ class TargetCacheBackendTypeOSS:
             return ""
 
     def get_commit_metadata_path(self, target: Target) -> str:
-        return os.path.join(self.get_commits_path(), f"{target.name}.json")
+        return os.path.join(self.get_commit_path(), f"{target.name}.json")
 
     def exists(self, target: Target) -> bool:
         return self.oss_client.exists(self.get_metadata_path(target))
@@ -207,13 +207,6 @@ class TargetCacheBackendTypeOSS:
         self.oss_client.upload(
             self.local_backend.get_metadata_path(target), self.get_metadata_path(target)
         )
-
-        # 记录成功执行的 target metadata，方便根据 commit sha 进行 load
-        if self._config.save_for_load and self.get_commits_path():
-            self.oss_client.upload(
-                self.local_backend.get_metadata_path(target),
-                self.get_commit_metadata_path(target),
-            )
 
     def clear_expired(self) -> None:
         logger.info("清理过期缓存...")
