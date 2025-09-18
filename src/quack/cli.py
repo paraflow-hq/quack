@@ -79,6 +79,7 @@ def execute_target(
     oss_backend = TargetCacheBackendTypeOSS(config, app_name)
     commit_metadata_path = oss_backend.get_commit_metadata_path(target)
     if mode == TargetExecutionMode.LOAD_ONLY:
+        print(commit_metadata_path)
         metadata = oss_backend.oss_client.read(commit_metadata_path)
         if metadata is None:
             logger.error(f"加载失败，未找到 Target {name} 的缓存")
