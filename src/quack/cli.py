@@ -12,13 +12,13 @@ from loguru import logger
 from quack.cache import TargetCacheBackendType, TargetCacheBackendTypeOSS
 from quack.config import Config
 from quack.models.script import Script
-from quack.models.target import Target, TargetExecutionMode
+from quack.models.target import TargetExecutionMode
 from quack.services.command_manager import CommandManager
 from quack.spec import Spec
 from quack.utils.ci_environment import CIEnvironment
 
 
-def execute_scripts_parallel(names: list[str], spec: Spec) -> None:
+def execute_scripts_parallel(spec: Spec, names: list[str]) -> None:
     """并行执行多个脚本，任一脚本执行失败则终止所有脚本"""
     if len(names) == 1:
         logger.error("并行模式下至少需要指定两个脚本或 Target")
@@ -42,7 +42,12 @@ def execute_scripts_parallel(names: list[str], spec: Spec) -> None:
     with ThreadPoolExecutor() as executor:
         futures: list[tuple[Script, Future[None]]] = []
         for script_name in script_names:
-            script = Script.get_by_name(script_name)
+            try:
+                script = spec.scripts[script_name]
+            except KeyError:
+                logger.critical(f"未找到脚本 {script_name}")
+                sys.exit(1)
+
             future = executor.submit(script.execute)
             futures.append((script, future))
 
@@ -59,8 +64,13 @@ def execute_scripts_parallel(names: list[str], spec: Spec) -> None:
                 sys.exit(1)
 
 
-def execute_script(name: str, arguments: list[str]) -> None:
-    script = Script.get_by_name(name)
+def execute_script(spec: Spec, name: str, arguments: list[str]) -> None:
+    try:
+        script = spec.scripts[name]
+    except KeyError:
+        logger.critical(f"未找到脚本 {name}")
+        sys.exit(1)
+
     try:
         script.execute(arguments)
     except CalledProcessError:
@@ -69,13 +79,19 @@ def execute_script(name: str, arguments: list[str]) -> None:
 
 
 def execute_target(
+    spec: Spec,
     app_name: str,
     name: str,
     cache_backend: type[TargetCacheBackendType],
     mode: TargetExecutionMode,
     config: Config,
 ) -> None:
-    target = Target.get_by_name(name)
+    try:
+        target = spec.targets[name]
+    except KeyError:
+        logger.critical(f"未找到 Target {name}")
+        sys.exit(1)
+
     oss_backend = TargetCacheBackendTypeOSS(config, app_name)
     commit_metadata_path = oss_backend.get_commit_metadata_path(target)
     if mode == TargetExecutionMode.LOAD_ONLY:
@@ -86,7 +102,7 @@ def execute_target(
         target.checksum_value = json.loads(metadata)["target_checksum"]
 
     try:
-        target.execute(config, cache_backend, mode)
+        target.execute(config, app_name, cache_backend, mode)
     except CalledProcessError:
         logger.error(f"Target {name} 执行失败")
         sys.exit(1)

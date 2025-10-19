@@ -2,6 +2,7 @@
 
 import argparse
 import atexit
+import json
 import os
 import signal
 import sys
@@ -10,6 +11,7 @@ from pathlib import Path
 from typing import cast
 
 from loguru import logger
+from pydantic import ValidationError
 
 from quack.cache import (
     TargetCacheBackendTypeLocal,
@@ -18,7 +20,6 @@ from quack.cache import (
 )
 from quack.cli import execute_script, execute_scripts_parallel, execute_target
 from quack.config import Config, LogLevel
-from quack.exceptions import SpecError
 from quack.models.target import TargetExecutionMode
 from quack.services.command_manager import CommandManager
 from quack.spec import Spec
@@ -143,22 +144,18 @@ def print_available_items(spec: Spec, list_targets: bool) -> None:
             print(f"  *  {name:32} - {target.description}")
 
 
-def init_spec(pwd: Path, spec_path: Path) -> Spec:
-    spec = Spec(pwd, spec_path)
-    try:
-        spec.validate()
-    except SpecError as e:
-        logger.error(f"配置文件错误: {e}")
-        sys.exit(1)
+def init_spec(spec_path: Path, cwd: Path) -> Spec:
+    spec = Spec.from_file(spec_path, cwd)
     return spec
 
 
-def get_spec_path(pwd: Path) -> Path:
-    while pwd != pwd.parent:
-        spec_path = pwd / "quack.yaml"
+def get_spec_path(cwd: Path) -> Path:
+    while cwd != cwd.parent:
+        spec_path = cwd / "quack.yaml"
+        # FIXME: 使用更合理的方式判断 root path
         if spec_path.exists() and spec_path.read_text().startswith("app_name: "):
             return spec_path
-        pwd = pwd.parent
+        cwd = cwd.parent
     else:
         logger.error("未找到 quack.yaml 配置文件")
         sys.exit(1)
@@ -168,12 +165,12 @@ def main():
     args = cast(QuackArgs, parse_args())
 
     if args.directory:
-        pwd = Path(args.directory).expanduser().resolve()
+        cwd = Path(args.directory).expanduser().resolve()
     else:
-        pwd = Path(os.getcwd())
+        cwd = Path(os.getcwd())
 
     # 找到并切换到根目录
-    spec_path = get_spec_path(pwd)
+    spec_path = get_spec_path(cwd)
     os.chdir(spec_path.parent)
 
     # 读取配置
@@ -187,7 +184,7 @@ def main():
 
     ci_environment = CIEnvironment()
 
-    spec = init_spec(pwd, spec_path)
+    spec = init_spec(spec_path, cwd)
 
     # 注册信号和退出处理器
     _ = signal.signal(signal.SIGINT, _signal_handler)  # pyright: ignore[reportUnknownArgumentType]
@@ -207,7 +204,7 @@ def main():
         sys.exit(1)
 
     if args.parallel:
-        execute_scripts_parallel(args.names, spec)
+        execute_scripts_parallel(spec, args.names)
         sys.exit(0)
 
     if args.load_only:
@@ -221,7 +218,7 @@ def main():
     name: str = args.names[0]
     arguments: list[str] = args.names[1:]
     if name in spec.scripts:
-        execute_script(name, arguments)
+        execute_script(spec, name, arguments)
     elif name in spec.targets:
         if args.load_only:
             mode = TargetExecutionMode.LOAD_ONLY
@@ -231,6 +228,7 @@ def main():
             mode = TargetExecutionMode.NORMAL
 
         execute_target(
+            spec,
             spec.app_name,
             name,
             TargetCacheBackendTypeMap[config.cache],

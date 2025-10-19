@@ -17,8 +17,7 @@ targets:
   - name: quack:test
     description: 执行 pytest
     dependencies:
-      - name: source:quack:test
-        type: source
+      - type: source
         paths:
           - ^.*$
     outputs:

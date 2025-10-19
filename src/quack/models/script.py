@@ -2,52 +2,26 @@
 
 from __future__ import annotations
 
-import re
-import sys
-from dataclasses import dataclass
+from pathlib import Path
 
-from loguru import logger
+from pydantic import Field, ValidationInfo, field_validator
 
-from quack.exceptions import SpecError
+from quack.models.base import BaseModel
 from quack.models.command import Command
 
 
-@dataclass
-class Script:
-    name: str
-    description: str
+class Script(BaseModel):
+    name: str = Field(max_length=32, pattern=r"^[a-z0-9\-_\.]+$")
+    description: str = Field(max_length=255)
+    base_path: Path = Field(default_factory=Path)
     command: Command
 
-    def __init__(self, data) -> None:
-        from quack.spec import Spec
-
-        self.name = data["name"]
-        self.description = data["description"]
-        self.command = Command(data["command"], Spec.get().pwd)
-
-    @staticmethod
-    def get_by_name(name: str) -> Script:
-        from quack.spec import Spec
-
-        try:
-            return Spec.get().scripts[name]
-        except KeyError:
-            logger.critical(f"未找到脚本 {name}")
-            sys.exit(1)
-
-    def validate(self) -> None:
-        if not re.match(r"^[a-z0-9\-_\.]+$", self.name):
-            raise SpecError(
-                f"脚本 {self.name} 的名称应是由小写字母、数字、小数点（.）、下划线（_）和连字符（-）组成"
-            )
-
-        if len(self.name) > 32:
-            raise SpecError(f"脚本 {self.name} 的名称过长")
-
-        if len(self.description) > 255:
-            raise SpecError(f"脚本 {self.name} 的描述过长")
-
-        self.command.validate()
+    @field_validator("command")
+    @classmethod
+    def validate_command(cls, v: Command, info: ValidationInfo) -> Command:
+        """脚本命令的默认执行目录为终端的当前工作目录"""
+        v.base_path = info.data["base_path"]
+        return v
 
     def execute(self, args: list[str] | None = None) -> None:
         self.command.execute(args)
