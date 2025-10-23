@@ -2,8 +2,8 @@ import hashlib
 from unittest import mock
 
 import pytest
+from pydantic import ValidationError
 
-from quack.exceptions import SpecError
 from quack.models.dependency import (
     DependencyTypeCommand,
     DependencyTypeSource,
@@ -15,8 +15,9 @@ from quack.models.dependency import (
 class TestDependencyTypeSource:
     @pytest.fixture(scope="function")
     def mock_dependency(self):
-        return DependencyTypeSource(
+        return DependencyTypeSource.model_validate(
             {
+                "type": "source",
                 "paths": [
                     r"^src/quack/__init__.py$",
                     r"^README.md$",
@@ -27,19 +28,29 @@ class TestDependencyTypeSource:
             }
         )
 
-    def test_validate(self):
-        d = DependencyTypeSource({"paths": ["^$"], "excludes": ["^$"]})
-        d.validate()
+    def test_validation(self):
+        # 测试有效的路径
+        DependencyTypeSource.model_validate(
+            {"type": "source", "paths": ["^$"], "excludes": ["^$"]}
+        )
 
-        d = DependencyTypeSource({"paths": ["^"], "excludes": ["^$"]})
-        with pytest.raises(SpecError) as exc_info:
-            d.validate()
-        assert "以 $ 结尾" in str(exc_info.value)
+        # 测试无效的 paths 格式（不以 $ 结尾）
+        with pytest.raises(ValidationError) as exc_info:
+            DependencyTypeSource.model_validate(
+                {"type": "source", "paths": ["^"], "excludes": ["^$"]}
+            )
+        errors = exc_info.value.errors()
+        assert len(errors) == 1
+        assert "路径必须以 ^ 开头，以 $ 结尾" in str(errors[0]["msg"])
 
-        d = DependencyTypeSource({"paths": ["^$"], "excludes": ["$"]})
-        with pytest.raises(SpecError) as exc_info:
-            d.validate()
-        assert "以 ^ 开头" in str(exc_info.value)
+        # 测试无效的 excludes 格式（不以 ^ 开头）
+        with pytest.raises(ValidationError) as exc_info:
+            DependencyTypeSource.model_validate(
+                {"type": "source", "paths": ["^$"], "excludes": ["$"]}
+            )
+        errors = exc_info.value.errors()
+        assert len(errors) == 1
+        assert "路径必须以 ^ 开头，以 $ 结尾" in str(errors[0]["msg"])
 
     @mock.patch("quack.utils.ci_environment.CIEnvironment")
     def test_get_matched_files(self, mock_ci_environment, mock_dependency):
@@ -70,8 +81,9 @@ class TestDependencyTypeSource:
             "src/quack/__init__.py\nREADME.md\nsrc/quack/new_file.py\n"
         )
 
-        d = DependencyTypeSource(
+        d = DependencyTypeSource.model_validate(
             {
+                "type": "source",
                 "paths": [
                     r"^src/quack/.*\.py$",
                 ],
@@ -95,8 +107,9 @@ class TestDependencyTypeSource:
             "src/quack/__init__.py\nscripts/quack/deleted.py\n"
         )
 
-        d = DependencyTypeSource(
+        d = DependencyTypeSource.model_validate(
             {
+                "type": "source",
                 "paths": [
                     r"^src/quack/.*\.py$",
                 ],
@@ -120,8 +133,9 @@ class TestDependencyTypeSource:
 class TestDependencyTypeCommand:
     @pytest.fixture(scope="function")
     def mock_dependency(self):
-        return DependencyTypeCommand(
+        return DependencyTypeCommand.model_validate(
             {
+                "type": "command",
                 "commands": [
                     "echo -n 1",
                     "echo -n 2",
@@ -151,8 +165,9 @@ class TestDependencyTypeCommand:
 class TestDependencyTypeVariable:
     @pytest.fixture(scope="function")
     def mock_dependency(self):
-        return DependencyTypeVariable(
+        return DependencyTypeVariable.model_validate(
             {
+                "type": "variable",
                 "names": [
                     r"^QUACK_MOCK_.*$",
                 ],
@@ -162,19 +177,22 @@ class TestDependencyTypeVariable:
             }
         )
 
-    def test_validate(self):
-        d = DependencyTypeVariable({"names": ["^$"], "excludes": ["^$"]})
-        d.validate()
+    def test_validation(self):
+        # 测试有效的环境变量名格式
+        DependencyTypeVariable.model_validate(
+            {"type": "variable", "names": ["^$"], "excludes": ["^$"]}
+        )
 
-        d = DependencyTypeVariable({"names": ["^"], "excludes": ["^$"]})
-        with pytest.raises(SpecError) as exc_info:
-            d.validate()
-        assert "以 $ 结尾" in str(exc_info.value)
+        # 测试无效的 names 格式（不以 $ 结尾）
+        with pytest.raises(ValidationError) as exc_info:
+            DependencyTypeVariable.model_validate(
+                {"type": "variable", "names": ["^"], "excludes": ["^$"]}
+            )
+        assert "环境变量名必须以 ^ 开头，以 $ 结尾" in str(exc_info.value)
 
-        d = DependencyTypeVariable({"names": ["^$"], "excludes": ["$"]})
-        with pytest.raises(SpecError) as exc_info:
-            d.validate()
-        assert "以 ^ 开头" in str(exc_info.value)
+        # 测试缺少必要字段
+        with pytest.raises(ValidationError):
+            DependencyTypeVariable.model_validate({"type": "variable"})
 
     def test_get_matched_variables(self, mock_dependency, monkeypatch):
         monkeypatch.setenv("QUACK_MOCK_DEBUG", "1")
@@ -194,22 +212,3 @@ class TestDependencyTypeVariable:
             mock_dependency.checksum_value
             == hashlib.sha256(repr(result).encode("utf-8")).hexdigest()
         )
-
-
-class TestDependencyTypeTarget:
-    @pytest.fixture(scope="function")
-    def mock_dependency(self):
-        return DependencyTypeTarget(
-            {
-                "name": "abc",
-            }
-        )
-
-    def test_validate(self, mock_dependency):
-        mock_dependency = DependencyTypeTarget({"name": "quack"})
-        mock_dependency.validate()
-
-        mock_dependency = DependencyTypeTarget({"name": "not-found"})
-        with pytest.raises(SpecError) as exc_info:
-            mock_dependency.validate()
-        assert "不存在" in str(exc_info.value)

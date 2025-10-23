@@ -15,14 +15,39 @@ os.chdir(BASE_DIR)
 def mock_test_spec():
     test_spec = {
         "app_name": "quack_test",
+        "cwd": str(BASE_DIR.resolve()),
+        "path": str((BASE_DIR / "quack.yaml").resolve()),
         "targets": [
             {
-                "name": "quack",
+                "name": "quack:test",
                 "description": "my test target",
-                "dependencies": [],
+                "dependencies": [
+                    {
+                        "type": "global",
+                        "name": "command:quack",
+                    }
+                ],
                 "outputs": {"paths": ["/tmp/quack-output"]},
                 "operations": {"build": {"command": "echo hello > /tmp/quack-output"}},
-            }
+            },
+            {
+                "name": "quack:test:child",
+                "description": "继承输出",
+                "dependencies": [{"type": "target", "name": "quack:test"}],
+                "outputs": {"paths": ["/tmp/child-output"], "inherit": True},
+                "operations": {"build": {"command": "echo child > /tmp/child-output"}},
+            },
+            {
+                "name": "quack:test:child:no-inheritance",
+                "description": "不继承输出",
+                "dependencies": [{"type": "target", "name": "quack:test"}],
+                "outputs": {"paths": ["/tmp/child-no-inheritance-output"]},
+                "operations": {
+                    "build": {
+                        "command": "echo child-no-inheritance > /tmp/child-no-inheritance-output"
+                    },
+                },
+            },
         ],
         "scripts": [
             {
@@ -30,10 +55,11 @@ def mock_test_spec():
                 "description": "my test script",
                 "command": {
                     "command": "echo test",
+                    "base_path": str(BASE_DIR.resolve()),
                     "path": "/tmp",
                     "variables": {"TEST": "value"},
                 },
-            }
+            },
         ],
         "global_dependencies": [
             {
@@ -41,10 +67,8 @@ def mock_test_spec():
                 "type": "source",
                 "paths": [
                     "^quack\\.yaml$",
-                    "^.*/quack\\.yaml$",
-                    "^scripts/quack\\.py$",
-                    "^scripts/quack/.*$",
                 ],
+                "propagate": True,
             },
             {
                 "name": "command:quack",
@@ -53,4 +77,7 @@ def mock_test_spec():
             },
         ],
     }
-    return Spec(BASE_DIR, BASE_DIR / "quack.yaml", test_spec)
+    spec = Spec.model_validate(test_spec)
+    spec.post_process()
+
+    return spec

@@ -4,7 +4,3 @@ class ChecksumError(Exception):
 
 class ConfigError(Exception):
     pass
-
-
-class SpecError(Exception):
-    pass

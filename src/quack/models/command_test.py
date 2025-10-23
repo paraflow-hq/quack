@@ -17,34 +17,33 @@ class TestCommand:
 
         # 测试基本初始化
         command = Command(
-            {"command": "echo test", "path": "tmp", "variables": {"TEST": "value"}},
+            command="echo test",
             base_path=base_path,
+            path=Path("tmp"),
+            variables={"TEST": "value"},
         )
         assert command.command == "echo test"
-        assert command.path == base_path / "tmp"
+        assert command.path == Path("tmp")
+        assert command.cwd == base_path.joinpath("tmp").resolve()
         assert command.variables["TEST"] == "value"
         assert command.variables["PATH"] == "/usr/bin:/bin"
 
         # 测试默认值
-        command = Command({"command": "echo test"}, base_path=base_path)
-        assert command.path == base_path
+        command = Command(command="echo test", base_path=base_path)
+        assert command.path == Path()
         assert command.variables["PATH"] == "/usr/bin:/bin"
 
         # 测试使用字符串初始化
-        command = Command("echo test", base_path=base_path)
+        command = Command.model_validate("echo test")
         assert command.command == "echo test"
-        assert command.path == base_path
+        assert command.base_path == Path()
         assert command.variables["PATH"] == "/usr/bin:/bin"
 
-        # 测试不传入 base_path
-        command = Command("echo test")
+        # 测试使用字典初始化
+        command = Command.model_validate({"command": "echo test"})
         assert command.command == "echo test"
-        assert command.path == Path(os.getcwd())
+        assert command.base_path == Path()
         assert command.variables["PATH"] == "/usr/bin:/bin"
-
-    def test_command_validation(self):
-        command = Command({"command": "echo test"})
-        command.validate()  # 不应该抛出异常
 
     @patch.dict(os.environ, {"PATH": "/usr/bin:/bin"}, clear=True)
     @patch("subprocess.Popen")
@@ -56,7 +55,9 @@ class TestCommand:
 
         # 测试不带参数的执行
         command = Command(
-            {"command": "echo hello", "path": "tmp", "variables": {"TEST": "value"}},
+            command="echo hello",
+            path=Path("tmp"),
+            variables={"TEST": "value"},
             base_path=Path("/base"),
         )
         command.execute()
@@ -69,11 +70,11 @@ class TestCommand:
         mock_popen.assert_called_once_with(
             "echo hello",
             shell=True,
-            cwd=Path("/base") / "tmp",
+            cwd=command.cwd,
             env=expected_env,
             start_new_session=True,
         )
-        assert command.process == mock_process
+        assert command._process == mock_process
 
         # 重置 mock
         mock_popen.reset_mock()
@@ -96,7 +97,7 @@ class TestCommand:
         mock_process.wait.return_value = 1
         mock_popen.return_value = mock_process
 
-        command = Command({"command": "false"}, base_path=Path("/base"))
+        command = Command(command="false", base_path=Path("/base"))
         with pytest.raises(subprocess.CalledProcessError) as exc_info:
             command.execute()
         assert exc_info.value.returncode == 1
@@ -109,8 +110,8 @@ class TestCommand:
         mock_process.pid = 12345
         mock_getpgid.return_value = 12345
 
-        command = Command({"command": "sleep 100"}, base_path=Path("/base"))
-        command.process = mock_process
+        command = Command(command="sleep 100", base_path=Path("/base"))
+        command._process = mock_process
         command.terminate()
 
         # 验证进程组终止
@@ -119,7 +120,7 @@ class TestCommand:
 
     @patch("os.killpg")
     def test_command_terminate_no_process(self, mock_killpg):
-        command = Command({"command": "echo test"}, base_path=Path("/base"))
+        command = Command(command="echo test", base_path=Path("/base"))
         command.terminate()  # 不应该抛出异常
         mock_killpg.assert_not_called()
 
@@ -129,6 +130,7 @@ class TestCommand:
         mock_process.pid = 12345
         mock_killpg.side_effect = ProcessLookupError()
 
-        command = Command({"command": "echo test"}, base_path=Path("/base"))
-        command.process = mock_process
+        command = Command(command="echo test", base_path=Path("/base"))
+        command._process = mock_process
         command.terminate()  # 不应该抛出异常
+

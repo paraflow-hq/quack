@@ -3,40 +3,42 @@
 import os
 import signal
 import subprocess
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from loguru import logger
+from pydantic import Field, computed_field, field_validator, model_validator
+
+from quack.models.base import BaseModel
 
 
-@dataclass
-class Command:
+class Command(BaseModel):
     command: str
-    path: Path
-    variables: dict[str, str]
+    base_path: Path = Field(default_factory=Path)
+    path: Path = Field(default_factory=Path)
+    variables: dict[str, str] = Field(default_factory=dict)
 
-    def __init__(
-        self, data: str | dict[str, Any], base_path: Path | None = None
-    ) -> None:
-        if base_path is None:
-            base_path = Path(os.getcwd())
+    _process: subprocess.Popen | None = None
 
+    @model_validator(mode="before")
+    @classmethod
+    def validate_model(cls, data: dict[str, Any]) -> dict[str, Any]:
         if isinstance(data, str):
-            self.command = data
-            self.path = base_path
-            self.variables = dict(os.environ)
+            return {"command": data}
         else:
-            self.command = data["command"]
-            self.path = base_path / data.get("path", "")
-            self.variables = dict(os.environ)
-            self.variables.update(data.get("variables", {}))
+            return data
 
-        # 用于跟踪子进程
-        self.process = None
+    @field_validator("variables")
+    @classmethod
+    def validate_variables(cls, v: dict[str, str]) -> dict[str, str]:
+        environ = dict(os.environ)
+        environ.update(v)
+        return environ
 
-    def validate(self) -> None:
-        pass
+    @computed_field
+    @property
+    def cwd(self) -> Path:
+        return self.base_path.joinpath(self.path).resolve()
 
     def execute(self, args: list[str] | None = None) -> None:
         from quack.services.command_manager import CommandManager
@@ -48,14 +50,14 @@ class Command:
         logger.info(f"正在执行命令 `{command}`...")
         try:
             CommandManager.get().register(self)
-            self.process = subprocess.Popen(
+            self._process = subprocess.Popen(
                 command,
-                cwd=self.path,
+                cwd=self.cwd,
                 env=self.variables,
                 shell=True,
                 start_new_session=True,
             )
-            returncode = self.process.wait()
+            returncode = self._process.wait()
             if returncode != 0:
                 raise subprocess.CalledProcessError(returncode, command)
         finally:
@@ -63,9 +65,9 @@ class Command:
 
     def terminate(self) -> None:
         """终止命令执行"""
-        if self.process:
+        if self._process:
             try:
                 # 终止整个进程组
-                os.killpg(os.getpgid(self.process.pid), signal.SIGTERM)
+                os.killpg(os.getpgid(self._process.pid), signal.SIGTERM)
             except ProcessLookupError:
                 pass  # 进程可能已经结束
