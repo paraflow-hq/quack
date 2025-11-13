@@ -100,9 +100,6 @@ class TargetCacheBackendTypeLocal:
             logger.info("清理过期缓存...")
             for root, dirs, _ in os.walk(self._cache_base_path):
                 for d in dirs:
-                    # 忽略 Target 以外的目录
-                    if ":" not in d:
-                        continue
                     full_path = os.path.join(root, d)
                     atime = datetime.fromtimestamp(os.path.getatime(full_path))
                     if (datetime.now() - atime).days > self.CACHE_EXPIRE_DAYS:
