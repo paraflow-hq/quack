@@ -2,7 +2,6 @@
 
 import argparse
 import atexit
-import json
 import os
 import signal
 import sys
@@ -11,7 +10,6 @@ from pathlib import Path
 from typing import cast
 
 from loguru import logger
-from pydantic import ValidationError
 
 from quack.cache import (
     TargetCacheBackendTypeLocal,

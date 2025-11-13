@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import subprocess
 from datetime import datetime, timedelta
 from typing import final, override
 
@@ -98,13 +99,26 @@ class TargetCacheBackendTypeLocal:
 
         if need_clear:
             logger.info("清理过期缓存...")
-            for root, dirs, _ in os.walk(self._cache_base_path):
-                for d in dirs:
-                    full_path = os.path.join(root, d)
-                    atime = datetime.fromtimestamp(os.path.getatime(full_path))
-                    if (datetime.now() - atime).days > self.CACHE_EXPIRE_DAYS:
-                        logger.debug(f"正在清理过期缓存 {full_path}...")
-                        shutil.rmtree(full_path)
+            # 使用 Find 命令清理目录，可以保证不会修改目录的 Access Time
+            cmd = [
+                "find",
+                self._cache_base_path,
+                "-mindepth",
+                "1",
+                "-type",
+                "d",
+                "-atime",
+                f"+{self.CACHE_EXPIRE_DAYS}",
+            ]
+            try:
+                result = subprocess.check_output(cmd, text=True)
+            except subprocess.CalledProcessError as e:
+                logger.error(f"清理过期缓存时出错: {e}")
+                return
+
+            for path in result.splitlines():
+                logger.debug(f"清理过期缓存目录：{path}")
+                shutil.rmtree(path, ignore_errors=True)
 
             with open(last_cleared_path, "w") as f:
                 _ = f.write(datetime.now().isoformat())
