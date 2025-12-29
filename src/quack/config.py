@@ -28,8 +28,6 @@ class OSSConfig(BaseSettings):
     endpoint: str = ""
     access_key_id: str = ""
     access_key_secret: str = ""
-    loglevel: str = "info"
-    parallel_level: int = 50
 
 
 class Config(BaseSettings):

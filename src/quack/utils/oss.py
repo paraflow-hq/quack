@@ -1,18 +1,19 @@
 #!/usr/bin/env python3
 
+import fnmatch
 import os
-import subprocess
-import tempfile
 from dataclasses import dataclass
 from datetime import datetime
 from typing import List, Union
 
+import oss2
+
 
 class OSSError(Exception):
-    def __init__(self, message, stdout, stderr):
+    def __init__(self, message: str, details: str = ""):
         self.message = message
-        self.stdout = stdout
-        self.stderr = stderr
+        self.details = details
+        super().__init__(f"{message}: {details}" if details else message)
 
 
 @dataclass
@@ -26,120 +27,170 @@ class OSSClient:
     def __init__(
         self,
         prefix: str,
-        config_file: Union[str, None] = None,
         ak: Union[str, None] = None,
         sk: Union[str, None] = None,
         endpoint: Union[str, None] = None,
-        log_level="info",
-        parallel_level=50,
     ):
         self._prefix = prefix
-        self._log_level = log_level
-        self._parallel_level = parallel_level
 
-        if config_file is None:
-            self.oss_command = (
-                f"ossutil64 -i {ak} -k {sk} -e {endpoint} --loglevel {self._log_level}"
-            )
-        else:
-            self.oss_command = (
-                f"ossutil64 -c {config_file} --loglevel {self._log_level}"
-            )
+        if not prefix.startswith("oss://"):
+            raise ValueError(f"OSS prefix 必须以 oss:// 开头：{prefix}")
 
-    @staticmethod
-    def _parse_datetime(datetime_str: str) -> datetime:
-        format_string = "%Y-%m-%d %H:%M:%S %z %Z"
-        return datetime.strptime(datetime_str, format_string).replace(tzinfo=None)
+        parts = prefix[6:].split("/", 1)
+        self._bucket_name = parts[0]
+        self._base_path = parts[1] if len(parts) > 1 else ""
+
+        # 初始化 OSS 认证和 Bucket
+        if not all([ak, sk, endpoint]):
+            raise ValueError("使用 oss2 SDK 需要提供 ak、sk 和 endpoint 参数")
+
+        self._auth = oss2.Auth(ak, sk)
+        self._bucket = oss2.Bucket(self._auth, endpoint, self._bucket_name)
+
+    def _get_object_key(self, path: str) -> str:
+        """将相对路径转换为 OSS 对象键"""
+        if self._base_path:
+            return f"{self._base_path}/{path}"
+        return path
+
+    def exists(self, path: str) -> bool:
+        """检查对象是否存在"""
+        try:
+            key = self._get_object_key(path)
+            self._bucket.head_object(key)
+            return True
+        except oss2.exceptions.NoSuchKey:
+            return False
+        except oss2.exceptions.OssError as e:
+            raise OSSError(f"检查文件是否存在失败：{path}", str(e))
+
+    def upload(self, path: str, dest: str) -> None:
+        """上传文件或目录到 OSS"""
+        try:
+            key = self._get_object_key(dest)
+
+            if os.path.isfile(path):
+                # 上传单个文件
+                self._bucket.put_object_from_file(key, path)
+            elif os.path.isdir(path):
+                # 上传目录中的所有文件
+                for root, _, files in os.walk(path):
+                    for file in files:
+                        local_file = os.path.join(root, file)
+                        rel_path = os.path.relpath(local_file, path)
+                        object_key = f"{key}/{rel_path}" if key else rel_path
+                        self._bucket.put_object_from_file(object_key, local_file)
+            else:
+                raise OSSError(f"路径不存在或不是文件/目录：{path}")
+        except oss2.exceptions.OssError as e:
+            raise OSSError(f"上传文件失败：{path}", str(e))
+
+    def download(self, path: str, dest: str) -> None:
+        """从 OSS 下载文件或目录"""
+        try:
+            key = self._get_object_key(path)
+
+            # 检查是否是目录（通过列出对象判断）
+            objects = list(oss2.ObjectIterator(self._bucket, prefix=key, max_keys=2))
+
+            if not objects:
+                raise OSSError(f"OSS 中不存在对象：{path}")
+
+            # 如果 key 以 / 结尾或有多个对象，视为目录
+            is_directory = key.endswith("/") or len(objects) > 1
+
+            if is_directory:
+                # 下载目录
+                os.makedirs(dest, exist_ok=True)
+                for obj in oss2.ObjectIterator(self._bucket, prefix=key):
+                    # 计算本地路径
+                    rel_path = obj.key[len(key) :].lstrip("/")
+                    if not rel_path:
+                        # 跳过目录对象本身
+                        continue
+                    local_file = os.path.join(dest, rel_path)
+                    dir_path = os.path.dirname(local_file)
+                    if dir_path:
+                        os.makedirs(dir_path, exist_ok=True)
+                    self._bucket.get_object_to_file(obj.key, local_file)
+            else:
+                # 下载单个文件
+                dir_path = os.path.dirname(dest)
+                if dir_path:
+                    os.makedirs(dir_path, exist_ok=True)
+                self._bucket.get_object_to_file(key, dest)
+        except oss2.exceptions.OssError as e:
+            raise OSSError(f"下载文件失败：{path}", str(e))
+
+    def read(self, path: str) -> Union[str, None]:
+        """读取 OSS 文件内容"""
+        try:
+            key = self._get_object_key(path)
+            result = self._bucket.get_object(key)
+            return result.read().decode("utf-8")
+        except oss2.exceptions.NoSuchKey:
+            return None
+        except oss2.exceptions.OssError as e:
+            raise OSSError(f"读取文件失败：{path}", str(e))
+
+    def remove(self, path: str, recursive=False) -> None:
+        """删除 OSS 对象"""
+        try:
+            key = self._get_object_key(path)
+
+            if recursive:
+                # 递归删除所有匹配的对象
+                keys_to_delete = []
+                for obj in oss2.ObjectIterator(self._bucket, prefix=key):
+                    keys_to_delete.append(obj.key)
+
+                # 批量删除（每次最多 1000 个）
+                for i in range(0, len(keys_to_delete), 1000):
+                    batch = keys_to_delete[i : i + 1000]
+                    self._bucket.batch_delete_objects(batch)
+            else:
+                # 删除单个对象
+                self._bucket.delete_object(key)
+        except oss2.exceptions.OssError as e:
+            raise OSSError(f"删除文件失败：{path}", str(e))
 
     def filter_files(
         self, path: str, include: List[str], exclude: List[str]
     ) -> List[OSSFileMetadata]:
-        cmd = f"{self.oss_command} ls {self._prefix}/{path}"
-        for pattern in include:
-            cmd += f" --include {pattern}"
-        for pattern in exclude:
-            cmd += f" --exclude {pattern}"
-
+        """列出并过滤文件"""
         try:
-            p = subprocess.check_output(cmd, shell=True, text=True)
-        except subprocess.CalledProcessError as e:
-            raise OSSError(f"列出文件失败：{path}", e.stdout, e.stderr)
+            key = self._get_object_key(path)
+            result = []
 
-        result = []
-        for line in p.splitlines()[2:]:
-            parts = line.rsplit(None, 4)
-            if len(parts) < 5:
-                continue
-            result.append(
-                OSSFileMetadata(
-                    path=parts[4][len(self._prefix) + 1 :],
-                    modified_time=self._parse_datetime(parts[0]),
-                    size=int(parts[1]),
+            for obj in oss2.ObjectIterator(self._bucket, prefix=key):
+                # 获取相对路径
+                rel_path = (
+                    obj.key[len(self._base_path) + 1 :] if self._base_path else obj.key
                 )
-            )
-        return result
 
-    def exists(self, path: str) -> bool:
-        cmd = f"{self.oss_command} stat {self._prefix}/{path} >/dev/null 2>&1"
-        p = subprocess.run(cmd, shell=True)
-        return p.returncode == 0
+                # 简单的模式匹配（支持通配符）
+                if include:
+                    match_include = any(
+                        fnmatch.fnmatch(rel_path, pattern) for pattern in include
+                    )
+                    if not match_include:
+                        continue
 
-    def upload(self, path: str, dest: str, force=False) -> None:
-        copy_param = "-f" if force else "-u"
-        cmd = f"{self.oss_command} cp --jobs {self._parallel_level} {copy_param} {path} {self._prefix}/{dest}"
-        try:
-            subprocess.run(
-                cmd,
-                shell=True,
-                check=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-            )
-        except subprocess.CalledProcessError as e:
-            raise OSSError(f"上传文件失败：{path}", e.stdout, e.stderr)
+                if exclude:
+                    match_exclude = any(
+                        fnmatch.fnmatch(rel_path, pattern) for pattern in exclude
+                    )
+                    if match_exclude:
+                        continue
 
-    def download(self, path: str, dest: str) -> None:
-        cmd = f"{self.oss_command} cp --jobs {self._parallel_level} -u {self._prefix}/{path} {dest}"
-        try:
-            subprocess.run(
-                cmd,
-                shell=True,
-                check=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-            )
-        except subprocess.CalledProcessError as e:
-            raise OSSError(f"下载文件失败：{path}", e.stdout, e.stderr)
+                result.append(
+                    OSSFileMetadata(
+                        path=rel_path,
+                        modified_time=datetime.fromtimestamp(obj.last_modified),
+                        size=obj.size,
+                    )
+                )
 
-    def read(self, path: str) -> Union[str, None]:
-        if not self.exists(path):
-            return None
-
-        with tempfile.NamedTemporaryFile() as temp_file:
-            temp_path = temp_file.name
-
-        try:
-            self.download(path, temp_path)
-
-            with open(temp_path, "r") as f:
-                return f.read()
-        finally:
-            if os.path.exists(temp_path):
-                os.remove(temp_path)
-
-    def remove(self, path: str, recursive=False) -> None:
-        remove_param = "-rf" if recursive else "-f"
-        cmd = f"{self.oss_command} rm {remove_param} {self._prefix}/{path}"
-        try:
-            subprocess.run(
-                cmd,
-                shell=True,
-                check=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-            )
-        except subprocess.CalledProcessError as e:
-            raise OSSError(f"删除文件失败：{path}", e.stdout, e.stderr)
+            return result
+        except oss2.exceptions.OssError as e:
+            raise OSSError(f"列出文件失败：{path}", str(e))
