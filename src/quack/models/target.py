@@ -117,7 +117,7 @@ class Target(BaseModel):
                 try:
                     cache.save()
                 except OSSError as e:
-                    logger.error(f"{e}\n{e.stdout}\n{e.stderr}")
+                    logger.error(f"存入缓存失败：{e}")
                     sys.exit(1)
 
         logger.success("执行完毕！")
