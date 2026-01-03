@@ -152,8 +152,6 @@ class TargetCacheBackendTypeOSS:
                 ak=self._config.oss.access_key_id,
                 sk=self._config.oss.access_key_secret,
                 endpoint=self._config.oss.endpoint,
-                log_level="info",
-                parallel_level=50,
             )
         return self._oss_client
 
@@ -184,7 +182,6 @@ class TargetCacheBackendTypeOSS:
         self.oss_client.upload(
             self.local_backend.get_metadata_path(target),
             self.get_metadata_path(target),
-            force=True,
         )
 
     def load(self, target: Target, update_access_time: bool = True) -> None:
