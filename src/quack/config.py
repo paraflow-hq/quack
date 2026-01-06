@@ -23,8 +23,9 @@ class LogLevel(Enum):
     ERROR = "ERROR"
 
 
-class OSSConfig(BaseSettings):
+class CloudConfig(BaseSettings):
     prefix: str = "oss://yfd-wukong-test/app"
+    region: str = ""
     endpoint: str = ""
     access_key_id: str = ""
     access_key_secret: str = ""
@@ -33,7 +34,7 @@ class OSSConfig(BaseSettings):
 class Config(BaseSettings):
     cache: str = "dev"
     log_level: LogLevel = LogLevel.INFO
-    oss: OSSConfig = OSSConfig()
+    cloud: CloudConfig = CloudConfig()
     save_for_load: bool = False
 
     model_config: ClassVar[SettingsConfigDict] = SettingsConfigDict(

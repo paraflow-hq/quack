@@ -18,7 +18,7 @@ from quack.models.target import Target
 from quack.utils.archiver import Archiver
 from quack.utils.ci_environment import CIEnvironment
 from quack.utils.metadata import Metadata
-from quack.utils.oss import OSSClient
+from quack.utils.cloud import create_cloud_client
 
 
 class TargetCacheBackendTypeRaw:
@@ -124,8 +124,8 @@ class TargetCacheBackendTypeLocal:
                 _ = f.write(datetime.now().isoformat())
 
 
-class TargetCacheBackendTypeOSS:
-    NAME: str = "oss"
+class TargetCacheBackendTypeCloud:
+    NAME: str = "cloud"
 
     CACHE_EXPIRE_DAYS: int = 15
 
@@ -134,7 +134,7 @@ class TargetCacheBackendTypeOSS:
         self._app_name: str = app_name
         self._cache_base_path: str = os.path.join(".quack-cache", app_name)
         self._local_backend: TargetCacheBackendTypeLocal | None = None
-        self._oss_client: OSSClient | None = None
+        self._cloud_client = None
 
     @property
     def local_backend(self) -> TargetCacheBackendTypeLocal:
@@ -145,15 +145,16 @@ class TargetCacheBackendTypeOSS:
         return self._local_backend
 
     @property
-    def oss_client(self) -> OSSClient:
-        if self._oss_client is None:
-            self._oss_client = OSSClient(
-                prefix=self._config.oss.prefix,
-                ak=self._config.oss.access_key_id,
-                sk=self._config.oss.access_key_secret,
-                endpoint=self._config.oss.endpoint,
+    def cloud_client(self):
+        if self._cloud_client is None:
+            self._cloud_client = create_cloud_client(
+                prefix=self._config.cloud.prefix,
+                region=self._config.cloud.region,
+                access_key_id=self._config.cloud.access_key_id,
+                access_key_secret=self._config.cloud.access_key_secret,
+                endpoint=self._config.cloud.endpoint,
             )
-        return self._oss_client
+        return self._cloud_client
 
     def get_cache_path(self, target: Target) -> str:
         return f"{self._cache_base_path}/{target.cache_path}"
@@ -175,11 +176,11 @@ class TargetCacheBackendTypeOSS:
         return os.path.join(self.get_commit_path(), f"{target.name}.json")
 
     def exists(self, target: Target) -> bool:
-        return self.oss_client.exists(self.get_metadata_path(target))
+        return self.cloud_client.exists(self.get_metadata_path(target))
 
     def update_access_time(self, target: Target) -> None:
         """重新上传一次 metadata 文件，来标识其被访问过"""
-        self.oss_client.upload(
+        self.cloud_client.upload(
             self.local_backend.get_metadata_path(target),
             self.get_metadata_path(target),
         )
@@ -192,13 +193,13 @@ class TargetCacheBackendTypeOSS:
                     self.update_access_time(target)
                 return
             except ChecksumError:
-                logger.warning("本地缓存已损坏，从 OSS 重新下载")
+                logger.warning("本地缓存已损坏，从云存储重新下载")
 
-        logger.info(f"正在从 OSS 加载 Target {target.name} 的缓存...")
-        self.oss_client.download(
+        logger.info(f"正在从云存储加载 Target {target.name} 的缓存...")
+        self.cloud_client.download(
             self.get_archive_path(target), self.local_backend.get_archive_path(target)
         )
-        self.oss_client.download(
+        self.cloud_client.download(
             self.get_metadata_path(target), self.local_backend.get_metadata_path(target)
         )
         self.local_backend.load(target)
@@ -208,17 +209,17 @@ class TargetCacheBackendTypeOSS:
     def save(self, target: Target) -> None:
         self.local_backend.save(target)
         archive_path = self.get_archive_path(target)
-        logger.debug(f"正在上传缓存到 OSS 路径 {archive_path}...")
-        self.oss_client.upload(
+        logger.debug(f"正在上传缓存到云存储路径 {archive_path}...")
+        self.cloud_client.upload(
             self.local_backend.get_archive_path(target), archive_path
         )
-        self.oss_client.upload(
+        self.cloud_client.upload(
             self.local_backend.get_metadata_path(target), self.get_metadata_path(target)
         )
 
     def clear_expired(self) -> None:
         logger.info("清理过期缓存...")
-        file_metadatas = self.oss_client.filter_files(
+        file_metadatas = self.cloud_client.filter_files(
             self._cache_base_path,
             include=[CACHE_METADATA_FILENAME],
             exclude=[],
@@ -230,11 +231,11 @@ class TargetCacheBackendTypeOSS:
                 cache_dir = m.path[: -len(CACHE_METADATA_FILENAME)]
                 assert cache_dir.startswith(self._cache_base_path)
                 logger.info(f"正在清理过期缓存 {cache_dir}...")
-                self.oss_client.remove(cache_dir, recursive=True)
+                self.cloud_client.remove(cache_dir, recursive=True)
 
 
-class TargetCacheBackendTypeDev(TargetCacheBackendTypeOSS):
-    """本地开发使用该 Backend，使用专用 OSS 目录，但获取缓存时会先尝试从 CI OSS 加载"""
+class TargetCacheBackendTypeDev(TargetCacheBackendTypeCloud):
+    """本地开发使用该 Backend，使用专用云存储目录，但获取缓存时会先尝试从 CI 云存储加载"""
 
     NAME: str = "dev"
 
@@ -243,21 +244,21 @@ class TargetCacheBackendTypeDev(TargetCacheBackendTypeOSS):
     def __init__(self, config: Config, app_name: str) -> None:
         super().__init__(config, app_name)
         self._cache_base_path: str = os.path.join(".quack-cache-dev", app_name)
-        self._ci_oss_backend: TargetCacheBackendTypeOSS = TargetCacheBackendTypeOSS(
+        self._ci_cloud_backend: TargetCacheBackendTypeCloud = TargetCacheBackendTypeCloud(
             config, app_name
         )
 
     @override
     def exists(self, target: Target) -> bool:
-        if self._ci_oss_backend.exists(target):
+        if self._ci_cloud_backend.exists(target):
             return True
         else:
             return super().exists(target)
 
     @override
     def load(self, target: Target, update_access_time: bool = True) -> None:
-        if self._ci_oss_backend.exists(target):
-            self._ci_oss_backend.load(target, update_access_time=False)
+        if self._ci_cloud_backend.exists(target):
+            self._ci_cloud_backend.load(target, update_access_time=False)
         else:
             super().load(target, update_access_time)
 
@@ -265,7 +266,7 @@ class TargetCacheBackendTypeDev(TargetCacheBackendTypeOSS):
 TargetCacheBackendType = (
     TargetCacheBackendTypeRaw
     | TargetCacheBackendTypeLocal
-    | TargetCacheBackendTypeOSS
+    | TargetCacheBackendTypeCloud
     | TargetCacheBackendTypeDev
 )
 
@@ -274,7 +275,7 @@ TargetCacheBackendTypeMap: dict[str, type[TargetCacheBackendType]] = {
     for backend in [
         TargetCacheBackendTypeRaw,
         TargetCacheBackendTypeLocal,
-        TargetCacheBackendTypeOSS,
+        TargetCacheBackendTypeCloud,
         TargetCacheBackendTypeDev,
     ]
 }

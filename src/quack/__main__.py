@@ -12,9 +12,9 @@ from typing import cast
 from loguru import logger
 
 from quack.cache import (
+    TargetCacheBackendTypeCloud,
     TargetCacheBackendTypeLocal,
     TargetCacheBackendTypeMap,
-    TargetCacheBackendTypeOSS,
 )
 from quack.cli import execute_script, execute_scripts_parallel, execute_target
 from quack.config import Config, LogLevel
@@ -190,7 +190,7 @@ def main():
     _ = atexit.register(exit_handler, config, spec.app_name)
 
     if args.clear_expired_cache:
-        TargetCacheBackendTypeOSS(config, spec.app_name).clear_expired()
+        TargetCacheBackendTypeCloud(config, spec.app_name).clear_expired()
         sys.exit(0)
 
     if args.list or args.list_all:
