@@ -9,7 +9,7 @@ from subprocess import CalledProcessError
 
 from loguru import logger
 
-from quack.cache import TargetCacheBackendType, TargetCacheBackendTypeOSS
+from quack.cache import TargetCacheBackendType, TargetCacheBackendTypeCloud
 from quack.config import Config
 from quack.models.script import Script
 from quack.models.target import TargetExecutionMode
@@ -92,10 +92,10 @@ def execute_target(
         logger.critical(f"未找到 Target {name}")
         sys.exit(1)
 
-    oss_backend = TargetCacheBackendTypeOSS(config, app_name)
-    commit_metadata_path = oss_backend.get_commit_metadata_path(target)
+    cloud_backend = TargetCacheBackendTypeCloud(config, app_name)
+    commit_metadata_path = cloud_backend.get_commit_metadata_path(target)
     if mode == TargetExecutionMode.LOAD_ONLY:
-        metadata = oss_backend.oss_client.read(commit_metadata_path)
+        metadata = cloud_backend.cloud_client.read(commit_metadata_path)
         if metadata is None:
             logger.error(f"加载失败，未找到 Target {name} 的缓存")
             sys.exit(1)
@@ -109,7 +109,7 @@ def execute_target(
 
     # 记录成功执行的 target metadata，方便根据 commit sha 进行 load
     if config.save_for_load and CIEnvironment.is_ci:
-        oss_backend.oss_client.upload(
-            oss_backend.local_backend.get_metadata_path(target),
-            oss_backend.get_commit_metadata_path(target),
+        cloud_backend.cloud_client.upload(
+            cloud_backend.local_backend.get_metadata_path(target),
+            cloud_backend.get_commit_metadata_path(target),
         )

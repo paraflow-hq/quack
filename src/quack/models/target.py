@@ -14,7 +14,7 @@ from quack.config import Config
 from quack.models.base import BaseModel
 from quack.models.command import Command
 from quack.models.dependency import Dependency, DependencyTypeTarget
-from quack.utils.oss import OSSError
+from quack.exceptions import CloudStorageError
 
 if TYPE_CHECKING:
     from quack.cache import TargetCacheBackendType
@@ -116,7 +116,7 @@ class Target(BaseModel):
                 logger.info(f"正在存入缓存，路径：{self.cache_path}")
                 try:
                     cache.save()
-                except OSSError as e:
+                except CloudStorageError as e:
                     logger.error(f"存入缓存失败：{e}")
                     sys.exit(1)
 
