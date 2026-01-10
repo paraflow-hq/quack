@@ -127,5 +127,5 @@ class Target(BaseModel):
                     sys.exit(1)
 
         elapsed = time.time() - start_time
-        logger.success("执行完毕！")
-        logger.info(f"Target {self.name} 执行耗时: {format_duration(elapsed)}")
+        logger.success(f"Target {self.name} 执行完毕！")
+        logger.info(f"执行耗时: {format_duration(elapsed)}")

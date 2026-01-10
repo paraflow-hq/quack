@@ -19,6 +19,7 @@ from quack.utils.archiver import Archiver
 from quack.utils.ci_environment import CIEnvironment
 from quack.utils.metadata import Metadata
 from quack.utils.cloud import create_cloud_client
+from quack.utils.formatter import format_size
 
 
 class TargetCacheBackendTypeRaw:
@@ -63,8 +64,10 @@ class TargetCacheBackendTypeLocal:
     def load(self, target: Target) -> None:
         # ossutil 自带 crc64 校验，不再需要 checksum，metadata 文件仅作为最后访问时间的标识
         # Checksummer.verify(self.get_archive_path(target), self.get_metadata_path(target))
-        logger.info(f"正在从本地加载 Target {target.name} 的缓存...")
-        Archiver.extract(self.get_archive_path(target))
+        archive_path = self.get_archive_path(target)
+        size = os.path.getsize(archive_path)
+        logger.info(f"正在从本地加载 Target {target.name} 的缓存（大小：{format_size(size)}）...")
+        Archiver.extract(archive_path)
 
     def save(self, target: Target) -> None:
         os.makedirs(self.get_cache_path(target), exist_ok=True)
@@ -73,6 +76,8 @@ class TargetCacheBackendTypeLocal:
         logger.debug(f"正在保存缓存到本地路径 {archive_path}...")
 
         Archiver.archive(target.outputs.paths, archive_path)
+        size = os.path.getsize(archive_path)
+        logger.info(f"已生成缓存（大小：{format_size(size)}）")
         Metadata.generate(
             self.get_archive_path(target),
             self.get_metadata_path(target),
