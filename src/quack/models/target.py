@@ -4,17 +4,20 @@ from __future__ import annotations
 
 import hashlib
 import sys
+import time
 from enum import Enum
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from loguru import logger
 from pydantic import Field
 
 from quack.config import Config
+from quack.exceptions import CloudStorageError
 from quack.models.base import BaseModel
 from quack.models.command import Command
 from quack.models.dependency import Dependency, DependencyTypeTarget
-from quack.exceptions import CloudStorageError
+from quack.utils.formatter import format_duration
 
 if TYPE_CHECKING:
     from quack.cache import TargetCacheBackendType
@@ -38,6 +41,7 @@ class TargetOperations(BaseModel):
 class Target(BaseModel):
     name: str = Field(max_length=48, pattern=r"^[a-z0-9\-]+:[a-z0-9\-:]+$")
     description: str = Field(max_length=255)
+    module_path: Path = Field(default_factory=Path)  # quack.yaml 文件所在目录
     dependencies: list[Dependency] = Field(default_factory=list)
     outputs: TargetOutputs
     operations: TargetOperations
@@ -85,6 +89,8 @@ class Target(BaseModel):
     ) -> None:
         from quack.cache import TargetCache
 
+        start_time = time.time()
+
         logger.info(f"正在执行 Target {self.name}...")
         logger.info(f"Target {self.name} Checksum 值：{self.checksum_value}")
         logger.info(f"正在查找 Target {self.name} 的缓存...")
@@ -120,4 +126,6 @@ class Target(BaseModel):
                     logger.error(f"存入缓存失败：{e}")
                     sys.exit(1)
 
+        elapsed = time.time() - start_time
         logger.success("执行完毕！")
+        logger.info(f"Target {self.name} 执行耗时: {format_duration(elapsed)}")

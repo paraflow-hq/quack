@@ -55,13 +55,18 @@ class Spec(BaseModel):
         return {dep["name"]: dep for dep in v}
 
     @field_validator("targets", mode="before")
-    def validate_targets(cls, v: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    def validate_targets(
+        cls, v: list[dict[str, Any]], info: ValidationInfo
+    ) -> dict[str, dict[str, Any]]:
         # 先处理全局依赖
         names = set()
+        module_path = Path(info.data["path"]).parent
         for target in v:
             if target["name"] in names:
                 raise ValueError(f"目标 {target['name']} 名称重复")
             names.add(target["name"])
+
+            target["module_path"] = str(module_path)
 
         return {target["name"]: target for target in v}
 
@@ -72,12 +77,14 @@ class Spec(BaseModel):
         # 仅加载 quack 执行目录下的 scripts 配置
         if info.data["path"].parent == info.data["cwd"]:
             names = set()
+            module_path = Path(info.data["path"]).parent
             for script in v:
                 if script["name"] in names:
                     raise ValueError(f"脚本 {script['name']} 名称重复")
                 names.add(script["name"])
 
                 script["base_path"] = info.data["cwd"]
+                script["module_path"] = str(module_path)
             return {script["name"]: script for script in v}
         else:
             return {}
