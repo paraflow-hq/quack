@@ -1,0 +1,27 @@
+output:
+    - meta # 打印 lefthook 版本
+    - summary # 打印概要块（成功和失败的步骤）
+    - empty_summary # 打印概要标题，即使没有步骤运行
+    - success # 打印成功的步骤
+    - failure # 打印失败的步骤
+    # - execution      # 打印任何执行日志
+    # - execution_out  # 打印执行输出
+    # - execution_info # 打印 `EXECUTE > ...` 日志
+    - skips # 打印跳过（例如没有匹配的文件）
+
+pre-commit:
+    parallel: true
+    jobs:
+        - name: ruff-format
+          glob: "*.py"
+          run: uv run ruff format --force-exclude {staged_files}
+          stage_fixed: true
+
+        - name: ruff-check
+          glob: "*.py"
+          run: uv run ruff check --fix --force-exclude {staged_files}
+          stage_fixed: true
+
+        - name: basedpyright
+          glob: "*.py"
+          run: uv run basedpyright {staged_files}
