@@ -27,9 +27,7 @@ def execute_scripts_parallel(spec: Spec, names: list[str]) -> None:
     # 检查脚本和目标名称
     script_names = [name for name in names if name in spec.scripts]
     target_names = [name for name in names if name in spec.targets]
-    other_names = [
-        name for name in names if name not in spec.scripts and name not in spec.targets
-    ]
+    other_names = [name for name in names if name not in spec.scripts and name not in spec.targets]
 
     if other_names:
         logger.error(f"无效的脚本或者 Target 名称：{', '.join(other_names)}")

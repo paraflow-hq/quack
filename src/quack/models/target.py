@@ -73,9 +73,7 @@ class Target(BaseModel):
             logger.debug(f"- {dep.display_name}: {dep.checksum_value}")
         return hashlib.sha256(repr(hash_tuple).encode("utf-8")).hexdigest()
 
-    def prepare_deps(
-        self, config: Config, app_name: str, cache_backend: type[TargetCacheBackendType]
-    ) -> None:
+    def prepare_deps(self, config: Config, app_name: str, cache_backend: type[TargetCacheBackendType]) -> None:
         for dep in self.dependencies:
             if isinstance(dep, DependencyTypeTarget):
                 dep.target.execute(config, app_name, cache_backend)
@@ -109,9 +107,7 @@ class Target(BaseModel):
                 sys.exit(1)
         else:
             if not cache_exists:
-                logger.info(
-                    f"未找到对应的缓存，开始重新生成缓存：{self.operations.build.command}"
-                )
+                logger.info(f"未找到对应的缓存，开始重新生成缓存：{self.operations.build.command}")
                 self.prepare_deps(config, app_name, cache_backend)
                 self.operations.build.execute()
 

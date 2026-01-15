@@ -37,10 +37,7 @@ class TestTarget:
         assert mock_test_spec.targets["quack:test"].cache_path.startswith("quack:test/")
 
     def test_cache_archive_filename(self, mock_test_spec: mock.Mock):
-        assert (
-            mock_test_spec.targets["quack:test"].cache_archive_filename
-            == "quack:test.tar.gz"
-        )
+        assert mock_test_spec.targets["quack:test"].cache_archive_filename == "quack:test.tar.gz"
 
     @mock.patch("quack.cache.TargetCache")
     def test_execute_deps_only(self, mock_target_cache, mock_test_spec: mock.Mock):
@@ -86,22 +83,11 @@ class TestTarget:
 
     def test_outputs_inheritance(self, mock_test_spec: mock.Mock):
         """测试 outputs 继承功能"""
-        assert (
-            "/tmp/quack-output"
-            in mock_test_spec.targets["quack:test:child"].outputs.paths
-        )
+        assert "/tmp/quack-output" in mock_test_spec.targets["quack:test:child"].outputs.paths
         assert len(mock_test_spec.targets["quack:test:child"].outputs.paths) == 2
 
-        assert (
-            "/tmp/quack-output"
-            not in mock_test_spec.targets[
-                "quack:test:child:no-inheritance"
-            ].outputs.paths
-        )
-        assert (
-            len(mock_test_spec.targets["quack:test:child:no-inheritance"].outputs.paths)
-            == 1
-        )
+        assert "/tmp/quack-output" not in mock_test_spec.targets["quack:test:child:no-inheritance"].outputs.paths
+        assert len(mock_test_spec.targets["quack:test:child:no-inheritance"].outputs.paths) == 1
 
     def test_global_dependencies(self, mock_test_spec: mock.Mock):
         assert len(mock_test_spec.targets["quack:test"].dependencies) == 2

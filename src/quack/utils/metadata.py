@@ -11,9 +11,7 @@ from quack.utils.checksummer import generate_sha256sum
 
 class Metadata:
     @staticmethod
-    def generate(
-        path: str, output_path: str, target_checksum: str, commit_sha: str
-    ) -> None:
+    def generate(path: str, output_path: str, target_checksum: str, commit_sha: str) -> None:
         with open(output_path, "w") as f:
             data = {
                 "target_checksum": target_checksum,

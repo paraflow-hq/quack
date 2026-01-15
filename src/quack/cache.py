@@ -17,9 +17,9 @@ from quack.exceptions import ChecksumError
 from quack.models.target import Target
 from quack.utils.archiver import Archiver
 from quack.utils.ci_environment import CIEnvironment
-from quack.utils.metadata import Metadata
 from quack.utils.cloud import create_cloud_client
 from quack.utils.formatter import format_size
+from quack.utils.metadata import Metadata
 
 
 class TargetCacheBackendTypeRaw:
@@ -44,7 +44,7 @@ class TargetCacheBackendTypeLocal:
     CACHE_CLEAR_DURATION_DAYS: int = 7
     CACHE_EXPIRE_DAYS: int = 15
 
-    def __init__(self, config: Config, app_name: str):
+    def __init__(self, _config: Config, app_name: str):
         self._app_name: str = app_name
 
         self._cache_base_path: str = os.path.join(xdg_cache_home(), "quack", app_name)
@@ -96,9 +96,7 @@ class TargetCacheBackendTypeLocal:
                 with open(last_cleared_path) as f:
                     iso_datetime = f.read().strip()
                     last_cleared = datetime.fromisoformat(iso_datetime)
-                    need_clear = (
-                        datetime.now() - last_cleared
-                    ).days > self.CACHE_CLEAR_DURATION_DAYS
+                    need_clear = (datetime.now() - last_cleared).days > self.CACHE_CLEAR_DURATION_DAYS
             except FileNotFoundError:
                 need_clear = True
 
@@ -144,9 +142,7 @@ class TargetCacheBackendTypeCloud:
     @property
     def local_backend(self) -> TargetCacheBackendTypeLocal:
         if self._local_backend is None:
-            self._local_backend = TargetCacheBackendTypeLocal(
-                self._config, self._app_name
-            )
+            self._local_backend = TargetCacheBackendTypeLocal(self._config, self._app_name)
         return self._local_backend
 
     @property
@@ -201,12 +197,8 @@ class TargetCacheBackendTypeCloud:
                 logger.warning("本地缓存已损坏，从云存储重新下载")
 
         logger.info(f"正在从云存储加载 Target {target.name} 的缓存...")
-        self.cloud_client.download(
-            self.get_archive_path(target), self.local_backend.get_archive_path(target)
-        )
-        self.cloud_client.download(
-            self.get_metadata_path(target), self.local_backend.get_metadata_path(target)
-        )
+        self.cloud_client.download(self.get_archive_path(target), self.local_backend.get_archive_path(target))
+        self.cloud_client.download(self.get_metadata_path(target), self.local_backend.get_metadata_path(target))
         self.local_backend.load(target)
         if update_access_time:
             self.update_access_time(target)
@@ -215,12 +207,8 @@ class TargetCacheBackendTypeCloud:
         self.local_backend.save(target)
         archive_path = self.get_archive_path(target)
         logger.debug(f"正在上传缓存到云存储路径 {archive_path}...")
-        self.cloud_client.upload(
-            self.local_backend.get_archive_path(target), archive_path
-        )
-        self.cloud_client.upload(
-            self.local_backend.get_metadata_path(target), self.get_metadata_path(target)
-        )
+        self.cloud_client.upload(self.local_backend.get_archive_path(target), archive_path)
+        self.cloud_client.upload(self.local_backend.get_metadata_path(target), self.get_metadata_path(target))
 
     def clear_expired(self) -> None:
         logger.info("清理过期缓存...")
@@ -230,9 +218,7 @@ class TargetCacheBackendTypeCloud:
             exclude=[],
         )
         for m in file_metadatas:
-            if datetime.now() - m.modified_time > timedelta(
-                days=self.CACHE_EXPIRE_DAYS
-            ):
+            if datetime.now() - m.modified_time > timedelta(days=self.CACHE_EXPIRE_DAYS):
                 cache_dir = m.path[: -len(CACHE_METADATA_FILENAME)]
                 assert cache_dir.startswith(self._cache_base_path)
                 logger.info(f"正在清理过期缓存 {cache_dir}...")
@@ -249,9 +235,7 @@ class TargetCacheBackendTypeDev(TargetCacheBackendTypeCloud):
     def __init__(self, config: Config, app_name: str) -> None:
         super().__init__(config, app_name)
         self._cache_base_path: str = os.path.join(".quack-cache-dev", app_name)
-        self._ci_cloud_backend: TargetCacheBackendTypeCloud = TargetCacheBackendTypeCloud(
-            config, app_name
-        )
+        self._ci_cloud_backend: TargetCacheBackendTypeCloud = TargetCacheBackendTypeCloud(config, app_name)
 
     @override
     def exists(self, target: Target) -> bool:
@@ -269,10 +253,7 @@ class TargetCacheBackendTypeDev(TargetCacheBackendTypeCloud):
 
 
 TargetCacheBackendType = (
-    TargetCacheBackendTypeRaw
-    | TargetCacheBackendTypeLocal
-    | TargetCacheBackendTypeCloud
-    | TargetCacheBackendTypeDev
+    TargetCacheBackendTypeRaw | TargetCacheBackendTypeLocal | TargetCacheBackendTypeCloud | TargetCacheBackendTypeDev
 )
 
 TargetCacheBackendTypeMap: dict[str, type[TargetCacheBackendType]] = {

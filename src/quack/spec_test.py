@@ -27,18 +27,14 @@ class TestSpec:
                     "description": "my test target",
                     "dependencies": [],
                     "outputs": {"paths": ["/tmp/quack-output"]},
-                    "operations": {
-                        "build": {"command": "echo hello > /tmp/quack-output"}
-                    },
+                    "operations": {"build": {"command": "echo hello > /tmp/quack-output"}},
                 },
                 {
                     "name": "quack",
                     "description": "my test target",
                     "dependencies": [],
                     "outputs": {"paths": ["/tmp/quack-output"]},
-                    "operations": {
-                        "build": {"command": "echo hello > /tmp/quack-output"}
-                    },
+                    "operations": {"build": {"command": "echo hello > /tmp/quack-output"}},
                 },
             ],
         }

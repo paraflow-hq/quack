@@ -123,11 +123,7 @@ def print_available_items(spec: Spec, list_targets: bool) -> None:
 
     print()
 
-    scripts = {
-        name: script
-        for name, script in spec.scripts.items()
-        if not name.startswith(".")
-    }
+    scripts = {name: script for name, script in spec.scripts.items() if not name.startswith(".")}
     if scripts:
         print("📜 脚本（仅当前目录可用）\n")
         for name, script in sorted(scripts.items()):
@@ -162,10 +158,7 @@ def get_spec_path(cwd: Path) -> Path:
 def main():
     args = cast(QuackArgs, parse_args())
 
-    if args.directory:
-        cwd = Path(args.directory).expanduser().resolve()
-    else:
-        cwd = Path(os.getcwd())
+    cwd = Path(args.directory).expanduser().resolve() if args.directory else Path(os.getcwd())
 
     # 找到并切换到根目录
     spec_path = get_spec_path(cwd)

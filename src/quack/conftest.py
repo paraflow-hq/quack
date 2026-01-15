@@ -43,9 +43,7 @@ def mock_test_spec():
                 "dependencies": [{"type": "target", "name": "quack:test"}],
                 "outputs": {"paths": ["/tmp/child-no-inheritance-output"]},
                 "operations": {
-                    "build": {
-                        "command": "echo child-no-inheritance > /tmp/child-no-inheritance-output"
-                    },
+                    "build": {"command": "echo child-no-inheritance > /tmp/child-no-inheritance-output"},
                 },
             },
         ],
