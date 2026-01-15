@@ -133,4 +133,3 @@ class TestCommand:
         command = Command(command="echo test", base_path=Path("/base"))
         command._process = mock_process
         command.terminate()  # 不应该抛出异常
-

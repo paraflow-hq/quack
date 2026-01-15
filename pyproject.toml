@@ -28,3 +28,41 @@ build-backend = "hatchling.build"
 
 [tool.uv.sources]
 woof-tools = { workspace = true }
+
+[tool.ruff]
+target-version = "py312"
+src = ["src"]
+line-length = 120
+
+[tool.ruff.lint]
+select = [
+    "E",     # pycodestyle 错误
+    "F",     # Pyflakes 语法检查
+    "W",     # pycodestyle 警告
+    "I",     # isort 导入排序
+    "N",     # pep8-naming 命名规范
+    "B",     # flake8-bugbear 常见错误
+    "C4",    # flake8-comprehensions 推导式优化
+    "SIM",   # flake8-simplify 代码简化
+    "UP",    # pyupgrade 语法现代化
+    "PIE",   # flake8-pie 杂项改进
+    "ARG",   # flake8-unused-arguments 未使用参数
+    "PERF",  # Perflint 性能优化
+    "FURB",  # refurb 现代惯用法
+    "RUF",   # Ruff 特有规则
+]
+ignore = [
+    "RUF001",  # 中文全角标点符号
+    "RUF002",  # docstring 中的中文全角标点
+    "RUF003",  # 注释中的中文全角标点
+    "N805",    # Pydantic validator 使用 cls
+]
+
+[tool.basedpyright]
+typeCheckingMode = "standard"
+
+[dependency-groups]
+dev = [
+    "basedpyright~=1.37.1",
+    "ruff~=0.14.11",
+]

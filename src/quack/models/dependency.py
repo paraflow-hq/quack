@@ -84,14 +84,11 @@ class DependencyTypeSource(BaseModel):
             if matched_counts[p.pattern] == 0:
                 raise ValueError(f"配置文件有误：没有找到匹配的文件: {p.pattern}")
 
-        return sorted(list(matched_files))
+        return sorted(matched_files)
 
     def get_matched_files_with_checksum(self) -> list[tuple[str, str]]:
         paths = self.get_matched_files()
-        result = []
-        for p in paths:
-            result.append((p, generate_sha256sum(p)))
-        return result
+        return [(p, generate_sha256sum(p)) for p in paths]
 
 
 class DependencyTypeCommand(BaseModel):
@@ -114,9 +111,7 @@ class DependencyTypeCommand(BaseModel):
     def get_command_outputs(self) -> list[tuple[str, str]]:
         outputs = []
         for command in self.commands:
-            output = subprocess.check_output(
-                command.command, cwd=command.path, text=True, shell=True
-            )
+            output = subprocess.check_output(command.command, cwd=command.path, text=True, shell=True)
             outputs.append((command.command, output))
         return outputs
 
@@ -206,11 +201,7 @@ class DependencyTypeGlobal(BaseModel):
 
 
 DependencyType = (
-    DependencyTypeCommand
-    | DependencyTypeGlobal
-    | DependencyTypeSource
-    | DependencyTypeTarget
-    | DependencyTypeVariable
+    DependencyTypeCommand | DependencyTypeGlobal | DependencyTypeSource | DependencyTypeTarget | DependencyTypeVariable
 )
 
 Dependency = Annotated[DependencyType, Field(discriminator="type")]

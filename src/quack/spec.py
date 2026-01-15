@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import sys
-from functools import lru_cache
+from functools import cache
 from pathlib import Path
 from typing import Any, ClassVar
 
@@ -27,9 +27,7 @@ class Spec(BaseModel):
     _INSTANCE: ClassVar[Spec | None] = None
 
     # TODO: 添加 app_name 存在的校验
-    app_name: str = Field(
-        default="", max_length=32, pattern=r"^[a-z0-9\-_]+$", validate_default=False
-    )
+    app_name: str = Field(default="", max_length=32, pattern=r"^[a-z0-9\-_]+$", validate_default=False)
     path: Path = Field(default_factory=Path)
     cwd: Path = Field(default_factory=Path)
     global_dependencies: dict[str, Dependency] = Field(default_factory=dict)
@@ -44,9 +42,7 @@ class Spec(BaseModel):
         super().__init__(*args, **kwargs)
 
     @field_validator("global_dependencies", mode="before")
-    def validate_global_dependencies(
-        cls, v: list[dict[str, Any]]
-    ) -> dict[str, dict[str, Any]]:
+    def validate_global_dependencies(cls, v: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
         names = set()
         for dep in v:
             if dep["name"] in names:
@@ -55,9 +51,7 @@ class Spec(BaseModel):
         return {dep["name"]: dep for dep in v}
 
     @field_validator("targets", mode="before")
-    def validate_targets(
-        cls, v: list[dict[str, Any]], info: ValidationInfo
-    ) -> dict[str, dict[str, Any]]:
+    def validate_targets(cls, v: list[dict[str, Any]], info: ValidationInfo) -> dict[str, dict[str, Any]]:
         # 先处理全局依赖
         names = set()
         module_path = Path(info.data["path"]).parent
@@ -71,9 +65,7 @@ class Spec(BaseModel):
         return {target["name"]: target for target in v}
 
     @field_validator("scripts", mode="before")
-    def validate_scripts(
-        cls, v: list[dict[str, Any]], info: ValidationInfo
-    ) -> dict[str, dict[str, Any]]:
+    def validate_scripts(cls, v: list[dict[str, Any]], info: ValidationInfo) -> dict[str, dict[str, Any]]:
         # 仅加载 quack 执行目录下的 scripts 配置
         if info.data["path"].parent == info.data["cwd"]:
             names = set()
@@ -142,23 +134,19 @@ class Spec(BaseModel):
             for script in spec.scripts.values():
                 self.add_script(script)
 
-        global_deps_to_propagate = [
-            dep for dep in self.global_dependencies.values() if dep.propagate
-        ]
+        global_deps_to_propagate = [dep for dep in self.global_dependencies.values() if dep.propagate]
         for target in self.targets.values():
             target.dependencies[:0] = global_deps_to_propagate
             for dep in target.dependencies:
                 if dep.type == "global":
                     if dep.name not in self.global_dependencies:
                         raise ValueError(f"全局依赖 {dep.name} 不存在")
-                    target.dependencies[target.dependencies.index(dep)] = (
-                        self.global_dependencies[dep.name]
-                    )
+                    target.dependencies[target.dependencies.index(dep)] = self.global_dependencies[dep.name]
 
         targets = self.targets
 
         # 后处理输出继承
-        @lru_cache(maxsize=None)
+        @cache
         def get_outputs(target_name: str) -> set[str]:
             """递归获取输出路径"""
             target = targets[target_name]

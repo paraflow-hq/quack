@@ -22,8 +22,8 @@ class Checksummer:
         cmd = f"sha256sum -c {checksum_path} > /dev/null"
         try:
             _ = subprocess.run(cmd, shell=True, check=True)
-        except subprocess.CalledProcessError:
-            raise ChecksumError(f"校验 Checksum 失败: {path}")
+        except subprocess.CalledProcessError as e:
+            raise ChecksumError(f"校验 Checksum 失败: {path}") from e
 
 
 def generate_sha256sum(path: str) -> str:

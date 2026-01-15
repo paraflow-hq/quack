@@ -7,7 +7,6 @@ from pydantic import ValidationError
 from quack.models.dependency import (
     DependencyTypeCommand,
     DependencyTypeSource,
-    DependencyTypeTarget,
     DependencyTypeVariable,
 )
 
@@ -30,24 +29,18 @@ class TestDependencyTypeSource:
 
     def test_validation(self):
         # 测试有效的路径
-        DependencyTypeSource.model_validate(
-            {"type": "source", "paths": ["^$"], "excludes": ["^$"]}
-        )
+        DependencyTypeSource.model_validate({"type": "source", "paths": ["^$"], "excludes": ["^$"]})
 
         # 测试无效的 paths 格式（不以 $ 结尾）
         with pytest.raises(ValidationError) as exc_info:
-            DependencyTypeSource.model_validate(
-                {"type": "source", "paths": ["^"], "excludes": ["^$"]}
-            )
+            DependencyTypeSource.model_validate({"type": "source", "paths": ["^"], "excludes": ["^$"]})
         errors = exc_info.value.errors()
         assert len(errors) == 1
         assert "路径必须以 ^ 开头，以 $ 结尾" in str(errors[0]["msg"])
 
         # 测试无效的 excludes 格式（不以 ^ 开头）
         with pytest.raises(ValidationError) as exc_info:
-            DependencyTypeSource.model_validate(
-                {"type": "source", "paths": ["^$"], "excludes": ["$"]}
-            )
+            DependencyTypeSource.model_validate({"type": "source", "paths": ["^$"], "excludes": ["$"]})
         errors = exc_info.value.errors()
         assert len(errors) == 1
         assert "路径必须以 ^ 开头，以 $ 结尾" in str(errors[0]["msg"])
@@ -72,14 +65,10 @@ class TestDependencyTypeSource:
 
     @mock.patch("quack.utils.ci_environment.CIEnvironment")
     @mock.patch("subprocess.check_output")
-    def test_get_matched_files_with_untracked(
-        self, mock_check_output, mock_ci_environment
-    ):
+    def test_get_matched_files_with_untracked(self, mock_check_output, mock_ci_environment):
         """测试非 CI 环境下包含未跟踪的文件"""
         mock_ci_environment.return_value.is_ci = False
-        mock_check_output.return_value = (
-            "src/quack/__init__.py\nREADME.md\nsrc/quack/new_file.py\n"
-        )
+        mock_check_output.return_value = "src/quack/__init__.py\nREADME.md\nsrc/quack/new_file.py\n"
 
         d = DependencyTypeSource.model_validate(
             {
@@ -98,14 +87,10 @@ class TestDependencyTypeSource:
 
     @mock.patch("quack.utils.ci_environment.CIEnvironment")
     @mock.patch("subprocess.check_output")
-    def test_get_matched_files_with_deleted(
-        self, mock_check_output, mock_ci_environment
-    ):
+    def test_get_matched_files_with_deleted(self, mock_check_output, mock_ci_environment):
         """测试非 CI 环境下处理已删除的文件"""
         mock_ci_environment.return_value.is_ci = False
-        mock_check_output.return_value = (
-            "src/quack/__init__.py\nscripts/quack/deleted.py\n"
-        )
+        mock_check_output.return_value = "src/quack/__init__.py\nscripts/quack/deleted.py\n"
 
         d = DependencyTypeSource.model_validate(
             {
@@ -124,10 +109,7 @@ class TestDependencyTypeSource:
     def test_checksum_value(self, mock_ci_environment, mock_dependency):
         mock_ci_environment.return_value.is_ci = True
         result = [("src/quack/__init__.py", hashlib.sha256().hexdigest())]
-        assert (
-            mock_dependency.checksum_value
-            == hashlib.sha256(repr(result).encode("utf-8")).hexdigest()
-        )
+        assert mock_dependency.checksum_value == hashlib.sha256(repr(result).encode("utf-8")).hexdigest()
 
 
 class TestDependencyTypeCommand:
@@ -156,10 +138,7 @@ class TestDependencyTypeCommand:
             ("echo -n 2", "2"),
             ("echo -n 3", "3"),
         ]
-        assert (
-            mock_dependency.checksum_value
-            == hashlib.sha256(repr(result).encode("utf-8")).hexdigest()
-        )
+        assert mock_dependency.checksum_value == hashlib.sha256(repr(result).encode("utf-8")).hexdigest()
 
 
 class TestDependencyTypeVariable:
@@ -179,15 +158,11 @@ class TestDependencyTypeVariable:
 
     def test_validation(self):
         # 测试有效的环境变量名格式
-        DependencyTypeVariable.model_validate(
-            {"type": "variable", "names": ["^$"], "excludes": ["^$"]}
-        )
+        DependencyTypeVariable.model_validate({"type": "variable", "names": ["^$"], "excludes": ["^$"]})
 
         # 测试无效的 names 格式（不以 $ 结尾）
         with pytest.raises(ValidationError) as exc_info:
-            DependencyTypeVariable.model_validate(
-                {"type": "variable", "names": ["^"], "excludes": ["^$"]}
-            )
+            DependencyTypeVariable.model_validate({"type": "variable", "names": ["^"], "excludes": ["^$"]})
         assert "环境变量名必须以 ^ 开头，以 $ 结尾" in str(exc_info.value)
 
         # 测试缺少必要字段
@@ -208,7 +183,4 @@ class TestDependencyTypeVariable:
         monkeypatch.setenv("QUACK_MOCK_CI_ENVIRONMENT", "testing")
         monkeypatch.setenv("QUACK_MOCK_LOG_LEVEL", "INFO")
         result = [("QUACK_MOCK_CI_ENVIRONMENT", "testing"), ("QUACK_MOCK_DEBUG", "1")]
-        assert (
-            mock_dependency.checksum_value
-            == hashlib.sha256(repr(result).encode("utf-8")).hexdigest()
-        )
+        assert mock_dependency.checksum_value == hashlib.sha256(repr(result).encode("utf-8")).hexdigest()

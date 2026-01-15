@@ -3,6 +3,7 @@
 import os
 import signal
 import subprocess
+from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
@@ -66,8 +67,6 @@ class Command(BaseModel):
     def terminate(self) -> None:
         """终止命令执行"""
         if self._process:
-            try:
-                # 终止整个进程组
+            # 终止整个进程组（进程可能已经结束，忽略 ProcessLookupError）
+            with suppress(ProcessLookupError):
                 os.killpg(os.getpgid(self._process.pid), signal.SIGTERM)
-            except ProcessLookupError:
-                pass  # 进程可能已经结束

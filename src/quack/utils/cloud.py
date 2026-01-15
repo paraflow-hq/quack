@@ -4,7 +4,6 @@ import fnmatch
 import os
 from dataclasses import dataclass
 from datetime import datetime
-from typing import List
 
 import boto3
 import oss2
@@ -24,7 +23,7 @@ class OSSClient:
     def __init__(
         self,
         prefix: str,
-        region: str,
+        _region: str,
         access_key_id: str,
         access_key_secret: str,
         endpoint: str,
@@ -40,9 +39,7 @@ class OSSClient:
 
         # 初始化 OSS 认证和 Bucket
         if not all([access_key_id, access_key_secret, endpoint]):
-            raise ValueError(
-                "使用 oss2 SDK 需要提供 access_key_id、access_key_secret 和 endpoint 参数"
-            )
+            raise ValueError("使用 oss2 SDK 需要提供 access_key_id、access_key_secret 和 endpoint 参数")
 
         self._auth = oss2.Auth(access_key_id, access_key_secret)
         self._bucket = oss2.Bucket(self._auth, endpoint, self._bucket_name)
@@ -62,7 +59,7 @@ class OSSClient:
         except oss2.exceptions.NoSuchKey:
             return False
         except oss2.exceptions.OssError as e:
-            raise CloudStorageError(f"检查文件是否存在失败：{path}", str(e))
+            raise CloudStorageError(f"检查文件是否存在失败：{path}", str(e)) from e
 
     def upload(self, path: str, dest: str) -> None:
         """上传文件或目录到 OSS"""
@@ -83,7 +80,7 @@ class OSSClient:
             else:
                 raise CloudStorageError(f"路径不存在或不是文件/目录：{path}")
         except oss2.exceptions.OssError as e:
-            raise CloudStorageError(f"上传文件失败：{path}", str(e))
+            raise CloudStorageError(f"上传文件失败：{path}", str(e)) from e
 
     def download(self, path: str, dest: str) -> None:
         """从 OSS 下载文件或目录"""
@@ -120,18 +117,19 @@ class OSSClient:
                     os.makedirs(dir_path, exist_ok=True)
                 self._bucket.get_object_to_file(key, dest)
         except oss2.exceptions.OssError as e:
-            raise CloudStorageError(f"下载文件失败：{path}", str(e))
+            raise CloudStorageError(f"下载文件失败：{path}", str(e)) from e
 
     def read(self, path: str) -> str | None:
         """读取 OSS 文件内容"""
         try:
             key = self._get_object_key(path)
             result = self._bucket.get_object(key)
-            return result.read().decode("utf-8")
+            content = result.read()
+            return content.decode("utf-8") if content else ""
         except oss2.exceptions.NoSuchKey:
             return None
         except oss2.exceptions.OssError as e:
-            raise CloudStorageError(f"读取文件失败：{path}", str(e))
+            raise CloudStorageError(f"读取文件失败：{path}", str(e)) from e
 
     def remove(self, path: str, recursive=False) -> None:
         """删除 OSS 对象"""
@@ -140,9 +138,7 @@ class OSSClient:
 
             if recursive:
                 # 递归删除所有匹配的对象
-                keys_to_delete = []
-                for obj in oss2.ObjectIterator(self._bucket, prefix=key):
-                    keys_to_delete.append(obj.key)
+                keys_to_delete = [obj.key for obj in oss2.ObjectIterator(self._bucket, prefix=key)]
 
                 # 批量删除（每次最多 1000 个）
                 for i in range(0, len(keys_to_delete), 1000):
@@ -152,11 +148,9 @@ class OSSClient:
                 # 删除单个对象
                 self._bucket.delete_object(key)
         except oss2.exceptions.OssError as e:
-            raise CloudStorageError(f"删除文件失败：{path}", str(e))
+            raise CloudStorageError(f"删除文件失败：{path}", str(e)) from e
 
-    def filter_files(
-        self, path: str, include: List[str], exclude: List[str]
-    ) -> List[CloudFileMetadata]:
+    def filter_files(self, path: str, include: list[str], exclude: list[str]) -> list[CloudFileMetadata]:
         """列出并过滤文件"""
         try:
             key = self._get_object_key(path)
@@ -164,22 +158,16 @@ class OSSClient:
 
             for obj in oss2.ObjectIterator(self._bucket, prefix=key):
                 # 获取相对路径
-                rel_path = (
-                    obj.key[len(self._base_path) + 1 :] if self._base_path else obj.key
-                )
+                rel_path = obj.key[len(self._base_path) + 1 :] if self._base_path else obj.key
 
                 # 简单的模式匹配（支持通配符）
                 if include:
-                    match_include = any(
-                        fnmatch.fnmatch(rel_path, pattern) for pattern in include
-                    )
+                    match_include = any(fnmatch.fnmatch(rel_path, pattern) for pattern in include)
                     if not match_include:
                         continue
 
                 if exclude:
-                    match_exclude = any(
-                        fnmatch.fnmatch(rel_path, pattern) for pattern in exclude
-                    )
+                    match_exclude = any(fnmatch.fnmatch(rel_path, pattern) for pattern in exclude)
                     if match_exclude:
                         continue
 
@@ -193,7 +181,7 @@ class OSSClient:
 
             return result
         except oss2.exceptions.OssError as e:
-            raise CloudStorageError(f"列出文件失败：{path}", str(e))
+            raise CloudStorageError(f"列出文件失败：{path}", str(e)) from e
 
 
 class S3Client:
@@ -234,7 +222,7 @@ class S3Client:
                     aws_secret_access_key=access_key_secret,
                 )
         except NoCredentialsError as e:
-            raise CloudStorageError("S3 认证失败", str(e))
+            raise CloudStorageError("S3 认证失败", str(e)) from e
 
     def _get_object_key(self, path: str) -> str:
         """将相对路径转换为 S3 对象键"""
@@ -251,7 +239,7 @@ class S3Client:
         except ClientError as e:
             if e.response["Error"]["Code"] == "404":
                 return False
-            raise CloudStorageError(f"检查文件是否存在失败：{path}", str(e))
+            raise CloudStorageError(f"检查文件是否存在失败：{path}", str(e)) from e
 
     def upload(self, path: str, dest: str) -> None:
         """上传文件或目录到 S3"""
@@ -268,13 +256,11 @@ class S3Client:
                         local_file = os.path.join(root, file)
                         rel_path = os.path.relpath(local_file, path)
                         object_key = f"{key}/{rel_path}" if key else rel_path
-                        self._client.upload_file(
-                            local_file, self._bucket_name, object_key
-                        )
+                        self._client.upload_file(local_file, self._bucket_name, object_key)
             else:
                 raise CloudStorageError(f"路径不存在或不是文件/目录：{path}")
         except ClientError as e:
-            raise CloudStorageError(f"上传文件失败：{path}", str(e))
+            raise CloudStorageError(f"上传文件失败：{path}", str(e)) from e
 
     def download(self, path: str, dest: str) -> None:
         """从 S3 下载文件或目录"""
@@ -282,9 +268,7 @@ class S3Client:
             key = self._get_object_key(path)
 
             # 检查是否是目录（通过列出对象判断）
-            response = self._client.list_objects_v2(
-                Bucket=self._bucket_name, Prefix=key, MaxKeys=2
-            )
+            response = self._client.list_objects_v2(Bucket=self._bucket_name, Prefix=key, MaxKeys=2)
 
             objects = response.get("Contents", [])
             if not objects:
@@ -309,9 +293,7 @@ class S3Client:
                         dir_path = os.path.dirname(local_file)
                         if dir_path:
                             os.makedirs(dir_path, exist_ok=True)
-                        self._client.download_file(
-                            self._bucket_name, obj_key, local_file
-                        )
+                        self._client.download_file(self._bucket_name, obj_key, local_file)
             else:
                 # 下载单个文件
                 dir_path = os.path.dirname(dest)
@@ -319,7 +301,7 @@ class S3Client:
                     os.makedirs(dir_path, exist_ok=True)
                 self._client.download_file(self._bucket_name, key, dest)
         except ClientError as e:
-            raise CloudStorageError(f"下载文件失败：{path}", str(e))
+            raise CloudStorageError(f"下载文件失败：{path}", str(e)) from e
 
     def read(self, path: str) -> str | None:
         """读取 S3 文件内容"""
@@ -330,7 +312,7 @@ class S3Client:
         except ClientError as e:
             if e.response["Error"]["Code"] == "NoSuchKey":
                 return None
-            raise CloudStorageError(f"读取文件失败：{path}", str(e))
+            raise CloudStorageError(f"读取文件失败：{path}", str(e)) from e
 
     def remove(self, path: str, recursive=False) -> None:
         """删除 S3 对象"""
@@ -342,24 +324,19 @@ class S3Client:
                 objects_to_delete = []
                 paginator = self._client.get_paginator("list_objects_v2")
                 for page in paginator.paginate(Bucket=self._bucket_name, Prefix=key):
-                    for obj in page.get("Contents", []):
-                        objects_to_delete.append({"Key": obj["Key"]})
+                    objects_to_delete.extend({"Key": obj["Key"]} for obj in page.get("Contents", []))
 
                 # 批量删除（每次最多 1000 个）
                 for i in range(0, len(objects_to_delete), 1000):
                     batch = objects_to_delete[i : i + 1000]
-                    self._client.delete_objects(
-                        Bucket=self._bucket_name, Delete={"Objects": batch}
-                    )
+                    self._client.delete_objects(Bucket=self._bucket_name, Delete={"Objects": batch})
             else:
                 # 删除单个对象
                 self._client.delete_object(Bucket=self._bucket_name, Key=key)
         except ClientError as e:
-            raise CloudStorageError(f"删除文件失败：{path}", str(e))
+            raise CloudStorageError(f"删除文件失败：{path}", str(e)) from e
 
-    def filter_files(
-        self, path: str, include: List[str], exclude: List[str]
-    ) -> List[CloudFileMetadata]:
+    def filter_files(self, path: str, include: list[str], exclude: list[str]) -> list[CloudFileMetadata]:
         """列出并过滤文件"""
         try:
             key = self._get_object_key(path)
@@ -370,24 +347,16 @@ class S3Client:
                 for obj in page.get("Contents", []):
                     obj_key = obj["Key"]
                     # 获取相对路径
-                    rel_path = (
-                        obj_key[len(self._base_path) + 1 :]
-                        if self._base_path
-                        else obj_key
-                    )
+                    rel_path = obj_key[len(self._base_path) + 1 :] if self._base_path else obj_key
 
                     # 简单的模式匹配（支持通配符）
                     if include:
-                        match_include = any(
-                            fnmatch.fnmatch(rel_path, pattern) for pattern in include
-                        )
+                        match_include = any(fnmatch.fnmatch(rel_path, pattern) for pattern in include)
                         if not match_include:
                             continue
 
                     if exclude:
-                        match_exclude = any(
-                            fnmatch.fnmatch(rel_path, pattern) for pattern in exclude
-                        )
+                        match_exclude = any(fnmatch.fnmatch(rel_path, pattern) for pattern in exclude)
                         if match_exclude:
                             continue
 
@@ -401,7 +370,7 @@ class S3Client:
 
             return result
         except ClientError as e:
-            raise CloudStorageError(f"列出文件失败：{path}", str(e))
+            raise CloudStorageError(f"列出文件失败：{path}", str(e)) from e
 
 
 def create_cloud_client(
@@ -432,6 +401,4 @@ def create_cloud_client(
     elif prefix.startswith("s3://"):
         return S3Client(prefix, region, access_key_id, access_key_secret, endpoint)
     else:
-        raise ConfigError(
-            f"不支持的云存储协议，prefix 必须以 oss:// 或 s3:// 开头：{prefix}"
-        )
+        raise ConfigError(f"不支持的云存储协议，prefix 必须以 oss:// 或 s3:// 开头：{prefix}")

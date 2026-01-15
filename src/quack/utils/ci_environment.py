@@ -39,9 +39,7 @@ class CIEnvironment:
 
     @cached_property
     def is_merge_group(self) -> bool:
-        gitlab_is_merge_train = (
-            os.environ.get("CI_MERGE_REQUEST_EVENT_TYPE") == "merge_train"
-        )
+        gitlab_is_merge_train = os.environ.get("CI_MERGE_REQUEST_EVENT_TYPE") == "merge_train"
         github_is_merge_group = os.environ.get("GITHUB_EVENT_NAME") == "merge_group"
 
         return gitlab_is_merge_train or github_is_merge_group
