@@ -16,7 +16,7 @@ from quack.cache import (
     TargetCacheBackendTypeLocal,
     TargetCacheBackendTypeMap,
 )
-from quack.cli import execute_script, execute_scripts_parallel, execute_target
+from quack.cli import execute_script, execute_target
 from quack.config import Config, LogLevel
 from quack.models.target import TargetExecutionMode
 from quack.services.command_manager import CommandManager
@@ -48,7 +48,6 @@ class QuackArgs(argparse.Namespace):
     clear_expired_cache: bool
     deps_only: bool
     names: list[str]
-    parallel: bool
     cache: str
     log_level: str
     list: bool
@@ -97,12 +96,6 @@ def parse_args() -> argparse.Namespace:
         "names",
         nargs="*",
         help="要执行的一个或多个脚本或 Target 名称",
-    )
-    _ = parser.add_argument(
-        "--parallel",
-        "-p",
-        action="store_true",
-        help="并行执行多个脚本",
     )
     _ = parser.add_argument(
         "--cache",
@@ -193,10 +186,6 @@ def main():
     if len(args.names) == 0:
         logger.error("请指定要执行的脚本或 Target")
         sys.exit(1)
-
-    if args.parallel:
-        execute_scripts_parallel(spec, args.names)
-        sys.exit(0)
 
     if args.load_only:
         if len(args.names) != 1:
