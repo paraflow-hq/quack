@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import functools
 import hashlib
 import os
 import re
@@ -48,17 +49,22 @@ class DependencyTypeSource(BaseModel):
         matched_files = self.get_matched_files_with_checksum()
         return hashlib.sha256(repr(matched_files).encode("utf-8")).hexdigest()
 
+    @staticmethod
+    @functools.lru_cache(maxsize=1)
+    def _get_git_ls_files() -> list[str]:
+        """获取 git ls-files 列表，结果会被缓存"""
+        cmd = ["git", "ls-files"]
+        # 开发机环境下，同时计算未加入到 git 管理的文件
+        if not CIEnvironment().is_ci:
+            cmd.extend(["-co", "--exclude-standard"])
+        return subprocess.check_output(cmd, text=True).splitlines()
+
     def get_matched_files(self) -> list[str]:
         """找出在 git 管理中，且符合条件的文件列表"""
         path_patterns = [re.compile(p) for p in self.paths]
         exclude_patterns = [re.compile(p) for p in self.excludes]
 
-        cmd = ["git", "ls-files"]
-        # 开发机环境下，同时计算未加入到 git 管理的文件
-        if not CIEnvironment().is_ci:
-            cmd.extend(["-co", "--exclude-standard"])
-
-        tracked_files = subprocess.check_output(cmd, text=True).splitlines()
+        tracked_files = self._get_git_ls_files()
 
         matched_files = set()
         matched_counts = defaultdict(int)

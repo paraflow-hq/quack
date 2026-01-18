@@ -11,6 +11,12 @@ from quack.models.dependency import (
 )
 
 
+@pytest.fixture(autouse=True)
+def clear_git_ls_files_cache():
+    """自动清除 git ls-files 缓存"""
+    DependencyTypeSource._get_git_ls_files.cache_clear()
+
+
 class TestDependencyTypeSource:
     @pytest.fixture(scope="function")
     def mock_dependency(self):
@@ -119,10 +125,10 @@ class TestDependencyTypeCommand:
             {
                 "type": "command",
                 "commands": [
-                    "echo -n 1",
-                    "echo -n 2",
+                    "printf '1'",
+                    "printf '2'",
                     {
-                        "command": "echo -n 3",
+                        "command": "printf '3'",
                         "path": "src/quack",
                     },
                 ],
@@ -130,13 +136,13 @@ class TestDependencyTypeCommand:
         )
 
     def test_init(self, mock_dependency):
-        assert mock_dependency.commands[0].command == "echo -n 1"
+        assert mock_dependency.commands[0].command == "printf '1'"
 
     def test_checksum_value(self, mock_dependency):
         result = [
-            ("echo -n 1", "1"),
-            ("echo -n 2", "2"),
-            ("echo -n 3", "3"),
+            ("printf '1'", "1"),
+            ("printf '2'", "2"),
+            ("printf '3'", "3"),
         ]
         assert mock_dependency.checksum_value == hashlib.sha256(repr(result).encode("utf-8")).hexdigest()
 
