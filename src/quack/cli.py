@@ -4,62 +4,15 @@ from __future__ import annotations
 
 import json
 import sys
-from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from subprocess import CalledProcessError
 
 from loguru import logger
 
 from quack.cache import TargetCacheBackendType, TargetCacheBackendTypeCloud
 from quack.config import Config
-from quack.models.script import Script
 from quack.models.target import TargetExecutionMode
-from quack.services.command_manager import CommandManager
 from quack.spec import Spec
 from quack.utils.ci_environment import CIEnvironment
-
-
-def execute_scripts_parallel(spec: Spec, names: list[str]) -> None:
-    """并行执行多个脚本，任一脚本执行失败则终止所有脚本"""
-    if len(names) == 1:
-        logger.error("并行模式下至少需要指定两个脚本或 Target")
-        sys.exit(1)
-
-    # 检查脚本和目标名称
-    script_names = [name for name in names if name in spec.scripts]
-    target_names = [name for name in names if name in spec.targets]
-    other_names = [name for name in names if name not in spec.scripts and name not in spec.targets]
-
-    if other_names:
-        logger.error(f"无效的脚本或者 Target 名称：{', '.join(other_names)}")
-        sys.exit(1)
-
-    if target_names:
-        logger.error("并行模式下只能执行脚本，不能执行 Target")
-        sys.exit(1)
-
-    with ThreadPoolExecutor() as executor:
-        futures: list[tuple[Script, Future[None]]] = []
-        for script_name in script_names:
-            try:
-                script = spec.scripts[script_name]
-            except KeyError:
-                logger.critical(f"未找到脚本 {script_name}")
-                sys.exit(1)
-
-            future = executor.submit(script.execute)
-            futures.append((script, future))
-
-        # 使用 as_completed 等待任务完成，这样可以立即发现失败的任务
-        name_future_map = {future: script.name for script, future in futures}
-        for future in as_completed([f for _, f in futures]):
-            name = name_future_map[future]
-            try:
-                future.result()
-                logger.success(f"脚本 {name} 执行成功")
-            except Exception:
-                logger.error(f"脚本 {name} 执行失败")
-                CommandManager.get().terminate_all()
-                sys.exit(1)
 
 
 def execute_script(spec: Spec, name: str, arguments: list[str]) -> None:
