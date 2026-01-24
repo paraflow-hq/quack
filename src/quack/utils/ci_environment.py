@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import os
+import subprocess
 from functools import cached_property
 
 
@@ -32,10 +33,21 @@ class CIEnvironment:
 
     @cached_property
     def commit_sha(self) -> str:
-        gitlab_commit_sha = os.environ.get("CI_COMMIT_SHA")
-        github_commit_sha = os.environ.get("GITHUB_SHA")
-
-        return gitlab_commit_sha or github_commit_sha or ""
+        # 优先使用实际的 git commit SHA
+        try:
+            result = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                capture_output=True,
+                text=True,
+                check=True,
+                timeout=5,
+            )
+            return result.stdout.strip()
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
+            # 如果不是 git 仓库或命令失败,回退到环境变量
+            gitlab_commit_sha = os.environ.get("CI_COMMIT_SHA")
+            github_commit_sha = os.environ.get("GITHUB_SHA")
+            return gitlab_commit_sha or github_commit_sha or ""
 
     @cached_property
     def is_merge_group(self) -> bool:
