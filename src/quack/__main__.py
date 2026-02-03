@@ -25,19 +25,33 @@ from quack.utils.ci_environment import CIEnvironment
 
 SCRIPT_DIR = Path(__file__).parent.resolve()
 
+_interrupted_by_signal = False
+
 
 def _signal_handler(signum: int, _) -> None:
-    """统一的信号处理函数"""
+    global _interrupted_by_signal
+
+    if _interrupted_by_signal:
+        os._exit(128 + signum)
+
+    _interrupted_by_signal = True
+
     if signum == signal.SIGINT:
         logger.info("用户主动中断执行")
+
     CommandManager.get().terminate_all()
-    sys.exit(1)
+    sys.exit(128 + signum)
 
 
 def exit_handler(config: Config, app_name: str) -> None:
-    CommandManager.get().terminate_all()
-    # 退出时定期清理本地缓存
-    TargetCacheBackendTypeLocal(config, app_name).clear_expired()
+    if _interrupted_by_signal:
+        return
+
+    try:
+        # 退出时定期清理本地缓存
+        TargetCacheBackendTypeLocal(config, app_name).clear_expired()
+    except Exception as e:
+        logger.warning(f"清理缓存时出错: {e}")
 
 
 @dataclass
