@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 import tempfile
 from collections.abc import Iterable
@@ -12,7 +13,10 @@ class Archiver:
     def archive(paths: Iterable[str], archive_path: str) -> None:
         paths_str = " ".join(paths) if paths else "-T /dev/null"
         cmd = f"tar czf {archive_path} {paths_str}"
-        _ = subprocess.run(cmd, shell=True, check=True)
+        env = os.environ.copy()
+        # 防止 macOS tar 包含 ._ 资源分支文件
+        env["COPYFILE_DISABLE"] = "1"
+        _ = subprocess.run(cmd, shell=True, check=True, env=env)
 
     @staticmethod
     def extract(archive_path: str, dest_path: str = ".") -> None:
