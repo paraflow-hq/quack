@@ -3,6 +3,7 @@
 import fnmatch
 import os
 import re
+from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -68,6 +69,26 @@ class OSSClient:
             return f"{self._base_path}/{path}"
         return path
 
+    def _list_objects(self, prefix: str, max_keys: int | None = None) -> Iterator[oss.models.ObjectProperties]:
+        """列出指定前缀下的对象"""
+        paginator = self._client.list_objects_v2_paginator()
+        count = 0
+
+        if max_keys is not None:
+            request = oss.ListObjectsV2Request(bucket=self._bucket_name, prefix=prefix, max_keys=min(max_keys, 1000))
+        else:
+            request = oss.ListObjectsV2Request(bucket=self._bucket_name, prefix=prefix)
+
+        for page in paginator.iter_page(request):
+            if not page.contents:
+                continue
+            for obj in page.contents:
+                if obj.key:
+                    yield obj
+                    count += 1
+                    if max_keys is not None and count >= max_keys:
+                        return
+
     def exists(self, path: str) -> bool:
         """检查对象是否存在"""
         key = self._get_object_key(path)
@@ -104,13 +125,7 @@ class OSSClient:
             key = self._get_object_key(path)
 
             # 检查是否是目录（通过列出对象判断）
-            paginator = self._client.list_objects_v2_paginator()
-            objects = []
-            for page in paginator.iter_page(oss.ListObjectsV2Request(bucket=self._bucket_name, prefix=key, max_keys=2)):
-                if page.contents:
-                    objects.extend(page.contents)
-                    if len(objects) >= 2:
-                        break
+            objects = list(self._list_objects(key, max_keys=2))
 
             if not objects:
                 raise CloudStorageError(f"OSS 中不存在对象：{path}")
@@ -121,26 +136,22 @@ class OSSClient:
             if is_directory:
                 # 下载目录
                 os.makedirs(dest, exist_ok=True)
-                paginator = self._client.list_objects_v2_paginator()
-                for page in paginator.iter_page(oss.ListObjectsV2Request(bucket=self._bucket_name, prefix=key)):
-                    if not page.contents:
+                for obj in self._list_objects(key):
+                    if not obj.key:
                         continue
-                    for obj in page.contents:
-                        if not obj.key:
-                            continue
-                        # 计算本地路径
-                        rel_path = obj.key[len(key) :].lstrip("/")
-                        if not rel_path:
-                            # 跳过目录对象本身
-                            continue
-                        local_file = os.path.join(dest, rel_path)
-                        dir_path = os.path.dirname(local_file)
-                        if dir_path:
-                            os.makedirs(dir_path, exist_ok=True)
-                        self._client.get_object_to_file(
-                            oss.GetObjectRequest(bucket=self._bucket_name, key=obj.key),
-                            local_file,
-                        )
+                    # 计算本地路径
+                    rel_path = obj.key[len(key) :].lstrip("/")
+                    if not rel_path:
+                        # 跳过目录对象本身
+                        continue
+                    local_file = os.path.join(dest, rel_path)
+                    dir_path = os.path.dirname(local_file)
+                    if dir_path:
+                        os.makedirs(dir_path, exist_ok=True)
+                    self._client.get_object_to_file(
+                        oss.GetObjectRequest(bucket=self._bucket_name, key=obj.key),
+                        local_file,
+                    )
             else:
                 # 下载单个文件
                 dir_path = os.path.dirname(dest)
@@ -177,11 +188,7 @@ class OSSClient:
 
             if recursive:
                 # 递归删除所有匹配的对象
-                keys_to_delete = []
-                paginator = self._client.list_objects_v2_paginator()
-                for page in paginator.iter_page(oss.ListObjectsV2Request(bucket=self._bucket_name, prefix=key)):
-                    if page.contents:
-                        keys_to_delete.extend([obj.key for obj in page.contents if obj.key])
+                keys_to_delete = [obj.key for obj in self._list_objects(key)]
 
                 # 批量删除（每次最多 1000 个）
                 for i in range(0, len(keys_to_delete), 1000):
@@ -205,36 +212,31 @@ class OSSClient:
             key = self._get_object_key(path)
             result = []
 
-            paginator = self._client.list_objects_v2_paginator()
-            for page in paginator.iter_page(oss.ListObjectsV2Request(bucket=self._bucket_name, prefix=key)):
-                if not page.contents:
+            for obj in self._list_objects(key):
+                if not obj.key or obj.last_modified is None or obj.size is None:
                     continue
 
-                for obj in page.contents:
-                    if not obj.key or obj.last_modified is None or obj.size is None:
+                # 获取相对路径
+                rel_path = obj.key[len(self._base_path) :].lstrip("/") if self._base_path else obj.key
+
+                # 简单的模式匹配（支持通配符）
+                if include:
+                    match_include = any(fnmatch.fnmatch(rel_path, pattern) for pattern in include)
+                    if not match_include:
                         continue
 
-                    # 获取相对路径
-                    rel_path = obj.key[len(self._base_path) + 1 :] if self._base_path else obj.key
+                if exclude:
+                    match_exclude = any(fnmatch.fnmatch(rel_path, pattern) for pattern in exclude)
+                    if match_exclude:
+                        continue
 
-                    # 简单的模式匹配（支持通配符）
-                    if include:
-                        match_include = any(fnmatch.fnmatch(rel_path, pattern) for pattern in include)
-                        if not match_include:
-                            continue
-
-                    if exclude:
-                        match_exclude = any(fnmatch.fnmatch(rel_path, pattern) for pattern in exclude)
-                        if match_exclude:
-                            continue
-
-                    result.append(
-                        CloudFileMetadata(
-                            path=rel_path,
-                            modified_time=obj.last_modified,
-                            size=obj.size,
-                        )
+                result.append(
+                    CloudFileMetadata(
+                        path=rel_path,
+                        modified_time=obj.last_modified,
+                        size=obj.size,
                     )
+                )
 
             return result
         except oss.exceptions.OperationError as e:
@@ -287,6 +289,19 @@ class S3Client:
             return f"{self._base_path}/{path}"
         return path
 
+    def _list_objects(self, prefix: str, max_keys: int | None = None) -> Iterator[dict]:
+        """列出指定前缀下的对象"""
+        paginator = self._client.get_paginator("list_objects_v2")
+        count = 0
+        pagination_config = {"PageSize": min(max_keys or 1000, 1000)} if max_keys else {}
+
+        for page in paginator.paginate(Bucket=self._bucket_name, Prefix=prefix, PaginationConfig=pagination_config):
+            for obj in page.get("Contents", []):
+                yield obj
+                count += 1
+                if max_keys is not None and count >= max_keys:
+                    return
+
     def exists(self, path: str) -> bool:
         """检查对象是否存在"""
         try:
@@ -325,9 +340,8 @@ class S3Client:
             key = self._get_object_key(path)
 
             # 检查是否是目录（通过列出对象判断）
-            response = self._client.list_objects_v2(Bucket=self._bucket_name, Prefix=key, MaxKeys=2)
+            objects = list(self._list_objects(key, max_keys=2))
 
-            objects = response.get("Contents", [])
             if not objects:
                 raise CloudStorageError(f"S3 中不存在对象：{path}")
 
@@ -337,20 +351,18 @@ class S3Client:
             if is_directory:
                 # 下载目录
                 os.makedirs(dest, exist_ok=True)
-                paginator = self._client.get_paginator("list_objects_v2")
-                for page in paginator.paginate(Bucket=self._bucket_name, Prefix=key):
-                    for obj in page.get("Contents", []):
-                        obj_key = obj["Key"]
-                        # 计算本地路径
-                        rel_path = obj_key[len(key) :].lstrip("/")
-                        if not rel_path:
-                            # 跳过目录对象本身
-                            continue
-                        local_file = os.path.join(dest, rel_path)
-                        dir_path = os.path.dirname(local_file)
-                        if dir_path:
-                            os.makedirs(dir_path, exist_ok=True)
-                        self._client.download_file(self._bucket_name, obj_key, local_file)
+                for obj in self._list_objects(key):
+                    obj_key = obj["Key"]
+                    # 计算本地路径
+                    rel_path = obj_key[len(key) :].lstrip("/")
+                    if not rel_path:
+                        # 跳过目录对象本身
+                        continue
+                    local_file = os.path.join(dest, rel_path)
+                    dir_path = os.path.dirname(local_file)
+                    if dir_path:
+                        os.makedirs(dir_path, exist_ok=True)
+                    self._client.download_file(self._bucket_name, obj_key, local_file)
             else:
                 # 下载单个文件
                 dir_path = os.path.dirname(dest)
@@ -378,10 +390,7 @@ class S3Client:
 
             if recursive:
                 # 递归删除所有匹配的对象
-                objects_to_delete = []
-                paginator = self._client.get_paginator("list_objects_v2")
-                for page in paginator.paginate(Bucket=self._bucket_name, Prefix=key):
-                    objects_to_delete.extend({"Key": obj["Key"]} for obj in page.get("Contents", []))
+                objects_to_delete = [{"Key": obj["Key"]} for obj in self._list_objects(key)]
 
                 # 批量删除（每次最多 1000 个）
                 for i in range(0, len(objects_to_delete), 1000):
@@ -399,31 +408,29 @@ class S3Client:
             key = self._get_object_key(path)
             result = []
 
-            paginator = self._client.get_paginator("list_objects_v2")
-            for page in paginator.paginate(Bucket=self._bucket_name, Prefix=key):
-                for obj in page.get("Contents", []):
-                    obj_key = obj["Key"]
-                    # 获取相对路径
-                    rel_path = obj_key[len(self._base_path) + 1 :] if self._base_path else obj_key
+            for obj in self._list_objects(key):
+                obj_key = obj["Key"]
+                # 获取相对路径
+                rel_path = obj_key[len(self._base_path) :].lstrip("/") if self._base_path else obj_key
 
-                    # 简单的模式匹配（支持通配符）
-                    if include:
-                        match_include = any(fnmatch.fnmatch(rel_path, pattern) for pattern in include)
-                        if not match_include:
-                            continue
+                # 简单的模式匹配（支持通配符）
+                if include:
+                    match_include = any(fnmatch.fnmatch(rel_path, pattern) for pattern in include)
+                    if not match_include:
+                        continue
 
-                    if exclude:
-                        match_exclude = any(fnmatch.fnmatch(rel_path, pattern) for pattern in exclude)
-                        if match_exclude:
-                            continue
+                if exclude:
+                    match_exclude = any(fnmatch.fnmatch(rel_path, pattern) for pattern in exclude)
+                    if match_exclude:
+                        continue
 
-                    result.append(
-                        CloudFileMetadata(
-                            path=rel_path,
-                            modified_time=obj["LastModified"],
-                            size=obj["Size"],
-                        )
+                result.append(
+                    CloudFileMetadata(
+                        path=rel_path,
+                        modified_time=obj["LastModified"],
+                        size=obj["Size"],
                     )
+                )
 
             return result
         except ClientError as e:
