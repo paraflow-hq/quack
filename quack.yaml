@@ -12,6 +12,12 @@ scripts:
   - name: test
     description: 执行 pytest
     command: uv run -m quack quack:test
+  - name: test-sleep
+    description: 测试长时间运行的命令
+    command: uv run quack sleep
+  - name: sleep
+    description: 睡眠
+    command: sleep 30
 
 targets:
   - name: quack:test

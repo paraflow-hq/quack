@@ -31,9 +31,6 @@ _interrupted_by_signal = False
 def _signal_handler(signum: int, _) -> None:
     global _interrupted_by_signal
 
-    if _interrupted_by_signal:
-        os._exit(128 + signum)
-
     _interrupted_by_signal = True
 
     if signum == signal.SIGINT:
