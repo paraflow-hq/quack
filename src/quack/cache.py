@@ -17,7 +17,7 @@ from quack.exceptions import ChecksumError
 from quack.models.target import Target
 from quack.utils.archiver import Archiver
 from quack.utils.ci_environment import CIEnvironment
-from quack.utils.cloud import create_cloud_client
+from quack.utils.cloud import CloudClient
 from quack.utils.formatter import format_size
 from quack.utils.metadata import Metadata
 
@@ -148,7 +148,7 @@ class TargetCacheBackendTypeCloud:
     @property
     def cloud_client(self):
         if self._cloud_client is None:
-            self._cloud_client = create_cloud_client(
+            self._cloud_client = CloudClient(
                 prefix=self._config.cloud.prefix,
                 region=self._config.cloud.region,
                 access_key_id=self._config.cloud.access_key_id,

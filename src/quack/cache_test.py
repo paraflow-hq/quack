@@ -6,17 +6,17 @@ from quack.config import Config
 
 
 class TestTargetCacheBackendTypeCloud:
-    @mock.patch("quack.cache.create_cloud_client")
+    @mock.patch("quack.cache.CloudClient")
     @mock.patch("quack.cache.TargetCacheBackendTypeLocal")
     def test_load_exists(
         self,
         mock_local_backend: mock.Mock,
-        mock_create_cloud_client: mock.Mock,
+        mock_cloud_client_class: mock.Mock,
         mock_test_spec: mock.Mock,
     ):
         # Mock 云存储客户端
         mock_cloud_client = mock.Mock()
-        mock_create_cloud_client.return_value = mock_cloud_client
+        mock_cloud_client_class.return_value = mock_cloud_client
 
         config = Config.model_construct()
         target = mock_test_spec.targets["quack:test"]
@@ -29,17 +29,17 @@ class TestTargetCacheBackendTypeCloud:
         # 验证 update_access_time 被调用（上传 metadata）
         assert mock_cloud_client.upload.called
 
-    @mock.patch("quack.cache.create_cloud_client")
+    @mock.patch("quack.cache.CloudClient")
     @mock.patch("quack.cache.TargetCacheBackendTypeLocal")
     def test_load_not_exists(
         self,
         mock_local_backend: mock.Mock,
-        mock_create_cloud_client: mock.Mock,
+        mock_cloud_client_class: mock.Mock,
         mock_test_spec: mock.Mock,
     ):
         # Mock 云存储客户端
         mock_cloud_client = mock.Mock()
-        mock_create_cloud_client.return_value = mock_cloud_client
+        mock_cloud_client_class.return_value = mock_cloud_client
 
         config = Config.model_construct()
         target = mock_test_spec.targets["quack:test"]
@@ -54,17 +54,17 @@ class TestTargetCacheBackendTypeCloud:
         assert mock_local_backend.return_value.load.call_count == 1
 
     @mock.patch.dict(os.environ, {"PATH": "/usr/bin:/bin"}, clear=True)
-    @mock.patch("quack.cache.create_cloud_client")
+    @mock.patch("quack.cache.CloudClient")
     @mock.patch("quack.cache.TargetCacheBackendTypeLocal")
     def test_save(
         self,
         mock_local_backend: mock.Mock,
-        mock_create_cloud_client: mock.Mock,
+        mock_cloud_client_class: mock.Mock,
         mock_test_spec: mock.Mock,
     ):
         # Mock 云存储客户端
         mock_cloud_client = mock.Mock()
-        mock_create_cloud_client.return_value = mock_cloud_client
+        mock_cloud_client_class.return_value = mock_cloud_client
 
         config = Config.model_construct()
         target = mock_test_spec.targets["quack:test"]
