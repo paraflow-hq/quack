@@ -16,6 +16,7 @@ dependencies = [
     "pytest>=8.3.5",
     "pyyaml>=6.0.2",
     "xdg-base-dirs>=6.0.2",
+    "zstandard>=0.23.0",
 ]
 
 [project.scripts]

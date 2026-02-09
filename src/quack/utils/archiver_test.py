@@ -9,7 +9,7 @@ class TestArchiver:
         tmp_file = tmp_path / "test.txt"
         tmp_file.write_text("test")
 
-        tmp_archive = tmp_path / "test.tar.gz"
+        tmp_archive = tmp_path / "test.tar.zst"
         Archiver.archive([str(tmp_file)], str(tmp_archive))
         assert tmp_archive.exists()
 
@@ -23,7 +23,7 @@ class TestArchiver:
         tmp_file.write_text("original content")
         origin_timestamp = os.path.getmtime(tmp_file)
 
-        tmp_archive = tmp_path / "test.tar.gz"
+        tmp_archive = tmp_path / "test.tar.zst"
         Archiver.archive([str(tmp_file)], str(tmp_archive))
 
         # 测试1: 内容相同时保留时间戳

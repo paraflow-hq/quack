@@ -93,5 +93,5 @@ src/quack/
 ```
 .quack-cache/<app-name>/<target-name>/<checksum>/
 ├── _metadata.json     # 元数据
-└── _archive.tar.gz    # 产物归档
+└── _archive.tar.zst   # 产物归档
 ```
