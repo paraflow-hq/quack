@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
-import subprocess
+import shutil
 import tarfile
 import tempfile
 from collections.abc import Iterable
+from pathlib import Path
 
 import zstandard as zstd
 
@@ -55,6 +57,30 @@ class Archiver:
             finally:
                 os.unlink(tmp_tar_path)
 
-            # 使用 rsync 同步到目标目录，相同内容的文件不会被覆盖
-            cmd_rsync = f"rsync --recursive --links --checksum {temp_dir}/ {dest_path}/"
-            _ = subprocess.run(cmd_rsync, shell=True, check=True)
+            # 同步到目标目录，基于内容比较，相同内容的文件不会被覆盖
+            Archiver._sync_with_checksum(temp_dir, dest_path)
+
+    @staticmethod
+    def _sync_with_checksum(src_dir: str, dest_dir: str) -> None:
+        """基于内容比较同步文件，内容相同时保持目标文件的时间戳"""
+        src_path = Path(src_dir)
+        dest_path = Path(dest_dir)
+
+        for src_file in src_path.rglob("*"):
+            if src_file.is_file():
+                rel_path = src_file.relative_to(src_path)
+                dest_file = dest_path / rel_path
+
+                dest_file.parent.mkdir(parents=True, exist_ok=True)
+
+                should_copy = True
+                if dest_file.exists():
+                    with open(src_file, "rb") as f1, open(dest_file, "rb") as f2:
+                        src_hash = hashlib.sha256(f1.read()).hexdigest()
+                        dest_hash = hashlib.sha256(f2.read()).hexdigest()
+                        should_copy = src_hash != dest_hash
+
+                if should_copy:
+                    shutil.copy2(src_file, dest_file)
+                    # 更新时间戳为当前时间
+                    os.utime(dest_file, None)
