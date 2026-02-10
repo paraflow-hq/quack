@@ -1,4 +1,5 @@
 import os
+import time
 
 from quack.utils.archiver import Archiver
 
@@ -9,7 +10,7 @@ class TestArchiver:
         tmp_file = tmp_path / "test.txt"
         tmp_file.write_text("test")
 
-        tmp_archive = tmp_path / "test.tar.gz"
+        tmp_archive = tmp_path / "test.tar.zst"
         Archiver.archive([str(tmp_file)], str(tmp_archive))
         assert tmp_archive.exists()
 
@@ -23,11 +24,12 @@ class TestArchiver:
         tmp_file.write_text("original content")
         origin_timestamp = os.path.getmtime(tmp_file)
 
-        tmp_archive = tmp_path / "test.tar.gz"
+        tmp_archive = tmp_path / "test.tar.zst"
         Archiver.archive([str(tmp_file)], str(tmp_archive))
 
         # 测试1: 内容相同时保留时间戳
         # 修改文件时间戳但保持相同内容
+        time.sleep(0.01)  # 确保时间戳不同
         tmp_file.write_text("original content")
         modified_time = os.path.getmtime(tmp_file)
         assert modified_time > origin_timestamp

@@ -37,7 +37,7 @@ class TestTarget:
         assert mock_test_spec.targets["quack:test"].cache_path.startswith("quack:test/")
 
     def test_cache_archive_filename(self, mock_test_spec: mock.Mock):
-        assert mock_test_spec.targets["quack:test"].cache_archive_filename == "quack:test.tar.gz"
+        assert mock_test_spec.targets["quack:test"].cache_archive_filename == "quack:test.tar.zst"
 
     @mock.patch("quack.cache.TargetCache")
     def test_execute_deps_only(self, mock_target_cache, mock_test_spec: mock.Mock):

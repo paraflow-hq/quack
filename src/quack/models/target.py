@@ -64,7 +64,7 @@ class Target(BaseModel):
 
     @property
     def cache_archive_filename(self) -> str:
-        return f"{self.name}.tar.gz"
+        return f"{self.name}.tar.zst"
 
     def compute_checksum(self) -> str:
         hash_tuple = [dep.checksum_value for dep in self.dependencies]
