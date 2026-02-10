@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import glob
 import hashlib
 import os
 import shutil
@@ -22,7 +23,13 @@ class Archiver:
         try:
             with tarfile.open(tmp_tar_path, "w") as tar:
                 for path in paths:
-                    tar.add(path, arcname=path)
+                    # 展开通配符
+                    matches = glob.glob(path)
+                    if not matches:
+                        raise FileNotFoundError(f"未找到匹配的文件：{path}")
+
+                    for matched_path in matches:
+                        tar.add(matched_path, arcname=matched_path)
 
             with open(tmp_tar_path, "rb") as f_in:
                 tar_data = f_in.read()
