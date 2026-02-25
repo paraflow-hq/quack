@@ -1,4 +1,4 @@
 {
   "setup": ["direnv allow ."],
-  "teardown": []
+  "teardown": ["direnv deny ."]
 }
