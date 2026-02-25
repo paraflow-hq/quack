@@ -1,0 +1,58 @@
+# Meta hooks 用于验证和调试配置本身
+[[repos]]
+repo = "meta"
+hooks = [
+  { id = "check-useless-excludes", always_run = true },
+]
+
+# 使用 prek 内置的 Rust 原生 hooks，性能更快且无需网络
+[[repos]]
+repo = "builtin"
+hooks = [
+  { id = "check-added-large-files" },
+  { id = "check-case-conflict" },
+  { id = "check-executables-have-shebangs" },
+  { id = "check-merge-conflict" },
+  { id = "check-symlinks" },
+  { id = "check-toml" },
+  { id = "check-yaml" },
+  { id = "detect-private-key" },
+  { id = "end-of-file-fixer" },
+  { id = "fix-byte-order-marker" },
+  { id = "mixed-line-ending" },
+  { id = "no-commit-to-branch" },
+  { id = "trailing-whitespace" },
+]
+
+[[repos]]
+repo = "https://github.com/commitizen-tools/commitizen"
+rev = "v4.13.9"
+hooks = [
+  { id = "commitizen" },
+]
+
+[[repos]]
+repo = "local"
+hooks = [
+  {
+    id = "ruff-format",
+    name = "ruff format",
+    entry = "uv run ruff format --force-exclude",
+    language = "system",
+    types = ["python"],
+  },
+  {
+    id = "ruff-check",
+    name = "ruff check",
+    entry = "uv run ruff check --fix --force-exclude",
+    language = "system",
+    types = ["python"],
+  },
+  {
+    id = "basedpyright",
+    name = "basedpyright type check",
+    entry = "uv run basedpyright",
+    language = "system",
+    types = ["python"],
+  },
+]

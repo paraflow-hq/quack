@@ -17,7 +17,7 @@ jobs:
       - name: 安装依赖
         run: uv sync --locked --dev
       - name: 运行代码检查
-        run: .bin/lefthook run pre-commit --all-files --fail-on-changes
+        uses: j178/prek-action@v1
 
   test:
     runs-on: ubuntu-latest
