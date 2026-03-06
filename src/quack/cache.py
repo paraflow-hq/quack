@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import contextlib
 import os
 import shutil
-import subprocess
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import final, override
 
 from loguru import logger
@@ -68,6 +69,9 @@ class TargetCacheBackendTypeLocal:
         size = os.path.getsize(archive_path)
         logger.info(f"正在从本地加载 Target {target.name} 的缓存（大小：{format_size(size)}）...")
         Archiver.extract(archive_path)
+        metadata_path = self.get_metadata_path(target)
+        if os.path.exists(metadata_path):
+            os.utime(metadata_path, None)
 
     def save(self, target: Target) -> None:
         os.makedirs(self.get_cache_path(target), exist_ok=True)
@@ -96,32 +100,39 @@ class TargetCacheBackendTypeLocal:
                 with open(last_cleared_path) as f:
                     iso_datetime = f.read().strip()
                     last_cleared = datetime.fromisoformat(iso_datetime)
-                    need_clear = (datetime.now() - last_cleared).days > self.CACHE_CLEAR_DURATION_DAYS
+                    need_clear = (datetime.now() - last_cleared).days >= self.CACHE_CLEAR_DURATION_DAYS
             except FileNotFoundError:
                 need_clear = True
 
         if need_clear:
             logger.info("清理过期缓存...")
-            # 使用 Find 命令清理目录，可以保证不会修改目录的 Access Time
-            cmd = [
-                "find",
-                self._cache_base_path,
-                "-mindepth",
-                "1",
-                "-type",
-                "d",
-                "-atime",
-                f"+{self.CACHE_EXPIRE_DAYS}",
-            ]
-            try:
-                result = subprocess.check_output(cmd, text=True)
-            except subprocess.CalledProcessError as e:
-                logger.error(f"清理过期缓存时出错: {e}")
-                return
-
-            for path in result.splitlines():
-                logger.debug(f"清理过期缓存目录：{path}")
-                shutil.rmtree(path, ignore_errors=True)
+            expire_before = datetime.now() - timedelta(days=self.CACHE_EXPIRE_DAYS)
+            # 缓存目录结构：<target>/<checksum[:2]>/<checksum[2:]>/
+            # 只清理最底层的 checksum 目录，避免误删仍有有效缓存的父目录
+            for target_dir in Path(self._cache_base_path).iterdir():
+                if not target_dir.is_dir():
+                    continue
+                for prefix_dir in target_dir.iterdir():
+                    if not prefix_dir.is_dir():
+                        continue
+                    for checksum_dir in prefix_dir.iterdir():
+                        if not checksum_dir.is_dir():
+                            continue
+                        # 用 metadata 文件的 mtime 作为最后使用时间；
+                        # 旧版本缓存没有 metadata 文件，则用目录 mtime 兜底
+                        metadata_path = checksum_dir / CACHE_METADATA_FILENAME
+                        if metadata_path.exists():
+                            last_used = datetime.fromtimestamp(metadata_path.stat().st_mtime)
+                        else:
+                            last_used = datetime.fromtimestamp(checksum_dir.stat().st_mtime)
+                        if last_used < expire_before:
+                            logger.debug(f"清理过期缓存目录：{checksum_dir}")
+                            shutil.rmtree(checksum_dir, ignore_errors=True)
+                    # 清理已变空的父目录
+                    with contextlib.suppress(OSError):
+                        prefix_dir.rmdir()
+                with contextlib.suppress(OSError):
+                    target_dir.rmdir()
 
             with open(last_cleared_path, "w") as f:
                 _ = f.write(datetime.now().isoformat())
