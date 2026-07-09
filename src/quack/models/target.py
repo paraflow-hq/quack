@@ -9,6 +9,7 @@ from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import zstandard as zstd
 from loguru import logger
 from pydantic import Field
 
@@ -113,14 +114,20 @@ class Target(BaseModel):
 
             if cache_exists:
                 logger.info("找到缓存，直接从缓存加载...")
-                cache.load()
-            else:
+                try:
+                    cache.load()
+                except zstd.ZstdError:
+                    logger.warning(f"缓存已损坏，将重新生成 Target {self.name}...")
+                    self.prepare_deps(config, app_name, cache_backend)
+                    self.operations.build.execute()
+                    cache_exists = False
+
+            if not cache_exists:
                 logger.info(f"正在存入缓存，路径：{self.cache_path}")
                 try:
                     cache.save()
                 except CloudStorageError as e:
-                    logger.error(f"存入缓存失败：{e}")
-                    sys.exit(1)
+                    logger.warning(f"上传缓存失败，将跳过云端缓存：{e}")
 
         elapsed = time.time() - start_time
         logger.success(f"Target {self.name} 执行完毕！")

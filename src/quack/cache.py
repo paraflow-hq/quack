@@ -9,6 +9,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import final, override
 
+import zstandard as zstd
 from loguru import logger
 from xdg_base_dirs import xdg_cache_home
 
@@ -204,13 +205,19 @@ class TargetCacheBackendTypeCloud:
                 if update_access_time:
                     self.update_access_time(target)
                 return
-            except ChecksumError:
+            except (ChecksumError, zstd.ZstdError):
                 logger.warning("本地缓存已损坏，从云存储重新下载")
+                shutil.rmtree(self.local_backend.get_cache_path(target), ignore_errors=True)
 
         logger.info(f"正在从云存储加载 Target {target.name} 的缓存...")
         self.cloud_client.download(self.get_archive_path(target), self.local_backend.get_archive_path(target))
         self.cloud_client.download(self.get_metadata_path(target), self.local_backend.get_metadata_path(target))
-        self.local_backend.load(target)
+        try:
+            self.local_backend.load(target)
+        except zstd.ZstdError:
+            logger.warning(f"云存储中 Target {target.name} 的缓存已损坏，将重新生成")
+            shutil.rmtree(self.local_backend.get_cache_path(target), ignore_errors=True)
+            raise
         if update_access_time:
             self.update_access_time(target)
 
