@@ -2,15 +2,53 @@
 
 import fnmatch
 import os
+import re
 from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import datetime
+from typing import NoReturn
 
 import boto3
+from boto3.exceptions import Boto3Error
 from botocore.config import Config as BotocoreConfig
-from botocore.exceptions import ClientError, NoCredentialsError
+from botocore.exceptions import (
+    BotoCoreError,
+    ClientError,
+    ConnectionClosedError,
+    ConnectTimeoutError,
+    EndpointConnectionError,
+    HTTPClientError,
+    NoCredentialsError,
+    ProxyConnectionError,
+    ReadTimeoutError,
+)
 
-from quack.exceptions import CloudStorageError
+from quack.exceptions import CloudStorageError, CloudStorageTransientError
+
+TRANSIENT_ERROR_CODES = {
+    "500",
+    "503",
+    "IncompleteBody",
+    "InternalError",
+    "RequestTimeout",
+    "RequestTimeoutException",
+    "ServiceUnavailable",
+    "SlowDown",
+    "Throttling",
+    "ThrottlingException",
+    "TooManyRequestsException",
+}
+
+TRANSIENT_NETWORK_ERRORS = (
+    ConnectionClosedError,
+    ConnectTimeoutError,
+    EndpointConnectionError,
+    HTTPClientError,
+    ProxyConnectionError,
+    ReadTimeoutError,
+)
+
+CLIENT_ERROR_MESSAGE_RE = re.compile(r"An error occurred \(([^)]+)\) when calling the \w+ operation")
 
 
 @dataclass
@@ -18,6 +56,57 @@ class CloudFileMetadata:
     path: str
     modified_time: datetime
     size: int
+
+
+def _get_client_error_code(error: ClientError) -> str:
+    code = error.response.get("Error", {}).get("Code", "")
+    return str(code)
+
+
+def _iter_error_chain(error: Exception) -> Iterator[Exception]:
+    seen: set[int] = set()
+    pending = [error]
+    while pending:
+        current_error = pending.pop()
+        if id(current_error) in seen:
+            continue
+
+        seen.add(id(current_error))
+        yield current_error
+
+        pending.extend(
+            wrapped_error
+            for wrapped_error in [
+                current_error.__context__,
+                current_error.__cause__,
+                getattr(current_error, "last_exception", None),
+            ]
+            if isinstance(wrapped_error, Exception)
+        )
+
+
+def _extract_error_code(error: Exception) -> str:
+    for current_error in _iter_error_chain(error):
+        if isinstance(current_error, ClientError):
+            return _get_client_error_code(current_error)
+
+        match = CLIENT_ERROR_MESSAGE_RE.search(str(current_error))
+        if match:
+            return match.group(1)
+
+    return ""
+
+
+def _is_transient_error(error: Exception) -> bool:
+    if any(isinstance(current_error, TRANSIENT_NETWORK_ERRORS) for current_error in _iter_error_chain(error)):
+        return True
+    return _extract_error_code(error) in TRANSIENT_ERROR_CODES
+
+
+def _raise_cloud_storage_error(message: str, path: str, error: Exception) -> NoReturn:
+    code = _extract_error_code(error)
+    exception_class = CloudStorageTransientError if _is_transient_error(error) else CloudStorageError
+    raise exception_class(f"{message}：{path}", str(error), code=code or None) from error
 
 
 class CloudClient:
@@ -117,7 +206,9 @@ class CloudClient:
         except ClientError as e:
             if e.response["Error"]["Code"] == "404":
                 return False
-            raise CloudStorageError(f"检查文件是否存在失败：{path}", str(e)) from e
+            _raise_cloud_storage_error("检查文件是否存在失败", path, e)
+        except (Boto3Error, BotoCoreError) as e:
+            _raise_cloud_storage_error("检查文件是否存在失败", path, e)
 
     def upload(self, path: str, dest: str) -> None:
         """上传文件或目录"""
@@ -137,8 +228,8 @@ class CloudClient:
                         self._client.upload_file(local_file, self._bucket_name, object_key)
             else:
                 raise CloudStorageError(f"路径不存在或不是文件/目录：{path}")
-        except ClientError as e:
-            raise CloudStorageError(f"上传文件失败：{path}", str(e)) from e
+        except (ClientError, Boto3Error, BotoCoreError) as e:
+            _raise_cloud_storage_error("上传文件失败", path, e)
 
     def download(self, path: str, dest: str) -> None:
         """下载文件或目录"""
@@ -175,8 +266,8 @@ class CloudClient:
                 if dir_path:
                     os.makedirs(dir_path, exist_ok=True)
                 self._client.download_file(self._bucket_name, key, dest)
-        except ClientError as e:
-            raise CloudStorageError(f"下载文件失败：{path}", str(e)) from e
+        except (ClientError, Boto3Error, BotoCoreError) as e:
+            _raise_cloud_storage_error("下载文件失败", path, e)
 
     def read(self, path: str) -> str | None:
         """读取文件内容"""
