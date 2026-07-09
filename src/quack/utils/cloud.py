@@ -63,8 +63,9 @@ def _extract_error_code(error: Exception) -> str:
     if isinstance(error, ClientError):
         return _get_client_error_code(error)
 
-    if isinstance(error.__context__, ClientError):
-        return _get_client_error_code(error.__context__)
+    for wrapped_error in [error.__context__, error.__cause__]:
+        if isinstance(wrapped_error, ClientError):
+            return _get_client_error_code(wrapped_error)
 
     match = re.search(r"An error occurred \(([^)]+)\)", str(error))
     if match:
@@ -75,7 +76,10 @@ def _extract_error_code(error: Exception) -> str:
 
 
 def _is_transient_error(error: Exception) -> bool:
-    if isinstance(error, TRANSIENT_NETWORK_ERRORS) or isinstance(error.__context__, TRANSIENT_NETWORK_ERRORS):
+    wrapped_errors = [error.__context__, error.__cause__]
+    if isinstance(error, TRANSIENT_NETWORK_ERRORS) or any(
+        isinstance(wrapped_error, TRANSIENT_NETWORK_ERRORS) for wrapped_error in wrapped_errors
+    ):
         return True
     return _extract_error_code(error) in TRANSIENT_ERROR_CODES
 
