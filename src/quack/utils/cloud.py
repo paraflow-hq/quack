@@ -2,15 +2,49 @@
 
 import fnmatch
 import os
+import re
 from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import datetime
 
 import boto3
+from boto3.exceptions import S3TransferFailedError, S3UploadFailedError
 from botocore.config import Config as BotocoreConfig
-from botocore.exceptions import ClientError, NoCredentialsError
+from botocore.exceptions import (
+    ClientError,
+    ConnectionClosedError,
+    ConnectTimeoutError,
+    EndpointConnectionError,
+    HTTPClientError,
+    NoCredentialsError,
+    ProxyConnectionError,
+    ReadTimeoutError,
+)
 
-from quack.exceptions import CloudStorageError
+from quack.exceptions import CloudStorageError, CloudStorageTransientError
+
+TRANSIENT_ERROR_CODES = {
+    "500",
+    "503",
+    "IncompleteBody",
+    "InternalError",
+    "RequestTimeout",
+    "RequestTimeoutException",
+    "ServiceUnavailable",
+    "SlowDown",
+    "Throttling",
+    "ThrottlingException",
+    "TooManyRequestsException",
+}
+
+TRANSIENT_NETWORK_ERRORS = (
+    ConnectionClosedError,
+    ConnectTimeoutError,
+    EndpointConnectionError,
+    HTTPClientError,
+    ProxyConnectionError,
+    ReadTimeoutError,
+)
 
 
 @dataclass
@@ -18,6 +52,38 @@ class CloudFileMetadata:
     path: str
     modified_time: datetime
     size: int
+
+
+def _get_client_error_code(error: ClientError) -> str:
+    code = error.response.get("Error", {}).get("Code", "")
+    return str(code)
+
+
+def _extract_error_code(error: Exception) -> str:
+    if isinstance(error, ClientError):
+        return _get_client_error_code(error)
+
+    if isinstance(error.__context__, ClientError):
+        return _get_client_error_code(error.__context__)
+
+    match = re.search(r"An error occurred \(([^)]+)\)", str(error))
+    if match:
+        return match.group(1)
+
+    match = re.search(r"\(([^)]+)\)", str(error))
+    return match.group(1) if match else ""
+
+
+def _is_transient_error(error: Exception) -> bool:
+    if isinstance(error, TRANSIENT_NETWORK_ERRORS) or isinstance(error.__context__, TRANSIENT_NETWORK_ERRORS):
+        return True
+    return _extract_error_code(error) in TRANSIENT_ERROR_CODES
+
+
+def _raise_cloud_storage_error(message: str, path: str, error: Exception) -> None:
+    code = _extract_error_code(error)
+    exception_class = CloudStorageTransientError if _is_transient_error(error) else CloudStorageError
+    raise exception_class(f"{message}：{path}", str(error), code=code or None) from error
 
 
 class CloudClient:
@@ -137,8 +203,8 @@ class CloudClient:
                         self._client.upload_file(local_file, self._bucket_name, object_key)
             else:
                 raise CloudStorageError(f"路径不存在或不是文件/目录：{path}")
-        except ClientError as e:
-            raise CloudStorageError(f"上传文件失败：{path}", str(e)) from e
+        except (ClientError, S3TransferFailedError, S3UploadFailedError, *TRANSIENT_NETWORK_ERRORS) as e:
+            _raise_cloud_storage_error("上传文件失败", path, e)
 
     def download(self, path: str, dest: str) -> None:
         """下载文件或目录"""
@@ -175,8 +241,8 @@ class CloudClient:
                 if dir_path:
                     os.makedirs(dir_path, exist_ok=True)
                 self._client.download_file(self._bucket_name, key, dest)
-        except ClientError as e:
-            raise CloudStorageError(f"下载文件失败：{path}", str(e)) from e
+        except (ClientError, S3TransferFailedError, *TRANSIENT_NETWORK_ERRORS) as e:
+            _raise_cloud_storage_error("下载文件失败", path, e)
 
     def read(self, path: str) -> str | None:
         """读取文件内容"""

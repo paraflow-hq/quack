@@ -14,7 +14,7 @@ from loguru import logger
 from pydantic import Field
 
 from quack.config import Config
-from quack.exceptions import CloudStorageError
+from quack.exceptions import CloudStorageTransientError
 from quack.models.base import BaseModel
 from quack.models.command import Command
 from quack.models.dependency import Dependency, DependencyTypeTarget
@@ -116,8 +116,8 @@ class Target(BaseModel):
                 logger.info("找到缓存，直接从缓存加载...")
                 try:
                     cache.load()
-                except zstd.ZstdError:
-                    logger.warning(f"缓存已损坏，将重新生成 Target {self.name}...")
+                except (CloudStorageTransientError, zstd.ZstdError) as e:
+                    logger.warning(f"缓存加载失败，将重新生成 Target {self.name}：{e}")
                     self.prepare_deps(config, app_name, cache_backend)
                     self.operations.build.execute()
                     cache_exists = False
@@ -126,7 +126,7 @@ class Target(BaseModel):
                 logger.info(f"正在存入缓存，路径：{self.cache_path}")
                 try:
                     cache.save()
-                except CloudStorageError as e:
+                except CloudStorageTransientError as e:
                     logger.warning(f"上传缓存失败，将跳过云端缓存：{e}")
 
         elapsed = time.time() - start_time

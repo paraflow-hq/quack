@@ -6,6 +6,7 @@ import zstandard as zstd
 
 from quack.cache import TargetCacheBackendTypeCloud
 from quack.config import Config
+from quack.exceptions import CloudStorageError, CloudStorageTransientError
 
 
 class TestTargetCacheBackendTypeCloud:
@@ -31,6 +32,55 @@ class TestTargetCacheBackendTypeCloud:
         mock_local_backend.return_value.load.assert_called_once()
         # 验证 update_access_time 被调用（上传 metadata）
         assert mock_cloud_client.upload.called
+
+    @mock.patch("quack.cache.CloudClient")
+    @mock.patch("quack.cache.TargetCacheBackendTypeLocal")
+    def test_load_exists_ignores_transient_access_time_update_failure(
+        self,
+        mock_local_backend: mock.Mock,
+        mock_cloud_client_class: mock.Mock,
+        mock_test_spec: mock.Mock,
+    ):
+        mock_cloud_client = mock.Mock()
+        mock_cloud_client.upload.side_effect = CloudStorageTransientError(
+            "上传文件失败",
+            "IncompleteBody",
+            code="IncompleteBody",
+        )
+        mock_cloud_client_class.return_value = mock_cloud_client
+
+        config = Config.model_construct()
+        target = mock_test_spec.targets["quack:test"]
+        target._checksum_value = ""
+        backend = TargetCacheBackendTypeCloud(config, mock_test_spec.app_name)
+
+        mock_local_backend.return_value.exists.return_value = True
+
+        backend.load(target)
+
+        mock_local_backend.return_value.load.assert_called_once()
+
+    @mock.patch("quack.cache.CloudClient")
+    @mock.patch("quack.cache.TargetCacheBackendTypeLocal")
+    def test_load_exists_raises_non_transient_access_time_update_failure(
+        self,
+        mock_local_backend: mock.Mock,
+        mock_cloud_client_class: mock.Mock,
+        mock_test_spec: mock.Mock,
+    ):
+        mock_cloud_client = mock.Mock()
+        mock_cloud_client.upload.side_effect = CloudStorageError("上传文件失败", "AccessDenied", code="AccessDenied")
+        mock_cloud_client_class.return_value = mock_cloud_client
+
+        config = Config.model_construct()
+        target = mock_test_spec.targets["quack:test"]
+        target._checksum_value = ""
+        backend = TargetCacheBackendTypeCloud(config, mock_test_spec.app_name)
+
+        mock_local_backend.return_value.exists.return_value = True
+
+        with pytest.raises(CloudStorageError):
+            backend.load(target)
 
     @mock.patch("quack.cache.CloudClient")
     @mock.patch("quack.cache.TargetCacheBackendTypeLocal")

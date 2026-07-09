@@ -4,6 +4,7 @@ import pytest
 from pydantic import ValidationError
 
 from quack.config import Config
+from quack.exceptions import CloudStorageError, CloudStorageTransientError
 from quack.models.target import Target, TargetExecutionMode
 
 
@@ -64,6 +65,39 @@ class TestTarget:
         mock_target_cache.return_value.hit.return_value = True
         target.execute(config, mock_test_spec.app_name, mock.Mock)
         mock_target_cache.return_value.load.assert_called_once()
+
+    @mock.patch("quack.cache.TargetCache")
+    def test_execute_ignores_transient_cache_save_failure(self, mock_target_cache, mock_test_spec: mock.Mock):
+        config = Config.model_construct()
+        target = mock_test_spec.targets["quack:test"]
+        target._checksum_value = ""
+
+        mock_target_cache.return_value.hit.return_value = False
+        mock_target_cache.return_value.save.side_effect = CloudStorageTransientError(
+            "上传文件失败",
+            "IncompleteBody",
+            code="IncompleteBody",
+        )
+        with mock.patch("quack.models.command.Command.execute") as mock_build:
+            target.execute(config, mock_test_spec.app_name, mock.Mock)
+
+        mock_build.assert_called_once()
+        mock_target_cache.return_value.save.assert_called_once()
+
+    @mock.patch("quack.cache.TargetCache")
+    def test_execute_raises_non_transient_cache_save_failure(self, mock_target_cache, mock_test_spec: mock.Mock):
+        config = Config.model_construct()
+        target = mock_test_spec.targets["quack:test"]
+        target._checksum_value = ""
+
+        mock_target_cache.return_value.hit.return_value = False
+        mock_target_cache.return_value.save.side_effect = CloudStorageError(
+            "上传文件失败",
+            "AccessDenied",
+            code="AccessDenied",
+        )
+        with mock.patch("quack.models.command.Command.execute"), pytest.raises(CloudStorageError):
+            target.execute(config, mock_test_spec.app_name, mock.Mock)
 
     @mock.patch("quack.cache.TargetCache")
     def test_execute_load_only(self, mock_target_cache, mock_test_spec: mock.Mock):
