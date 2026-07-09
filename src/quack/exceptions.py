@@ -1,4 +1,8 @@
-class ChecksumError(Exception):
+class CacheCorruptionError(Exception):
+    pass
+
+
+class ChecksumError(CacheCorruptionError):
     pass
 
 

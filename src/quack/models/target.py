@@ -9,12 +9,11 @@ from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-import zstandard as zstd
 from loguru import logger
 from pydantic import Field
 
 from quack.config import Config
-from quack.exceptions import CloudStorageTransientError
+from quack.exceptions import CacheCorruptionError, CloudStorageTransientError
 from quack.models.base import BaseModel
 from quack.models.command import Command
 from quack.models.dependency import Dependency, DependencyTypeTarget
@@ -92,48 +91,49 @@ class Target(BaseModel):
 
         logger.info(f"正在执行 Target {self.name}...")
         logger.info(f"Target {self.name} Checksum 值：{self.checksum_value}")
-        logger.info(f"正在查找 Target {self.name} 的缓存...")
-
-        cache = TargetCache(config, app_name, self, cache_backend)
-        try:
-            cache_exists = cache.hit()
-        except CloudStorageTransientError as e:
-            if mode == TargetExecutionMode.LOAD_ONLY:
-                raise
-            logger.warning(f"缓存命中检查失败，将重新生成 Target {self.name}：{e}")
-            cache_exists = False
 
         if mode == TargetExecutionMode.DEPS_ONLY:
             self.prepare_deps(config, app_name, cache_backend)
-        elif mode == TargetExecutionMode.LOAD_ONLY:
-            if cache_exists:
-                logger.info("找到缓存，直接从缓存加载...")
-                cache.load()
-            else:
-                logger.error("未找到缓存，无法进行加载")
-                sys.exit(1)
         else:
-            if not cache_exists:
-                logger.info(f"未找到对应的缓存，开始重新生成缓存：{self.operations.build.command}")
-                self.prepare_deps(config, app_name, cache_backend)
-                self.operations.build.execute()
+            logger.info(f"正在查找 Target {self.name} 的缓存...")
+            cache = TargetCache(config, app_name, self, cache_backend)
+            try:
+                cache_exists = cache.hit()
+            except CloudStorageTransientError as e:
+                if mode == TargetExecutionMode.LOAD_ONLY:
+                    raise
+                logger.warning(f"缓存命中检查失败，将重新生成 Target {self.name}：{e}")
+                cache_exists = False
 
-            if cache_exists:
-                logger.info("找到缓存，直接从缓存加载...")
-                try:
+            if mode == TargetExecutionMode.LOAD_ONLY:
+                if cache_exists:
+                    logger.info("找到缓存，直接从缓存加载...")
                     cache.load()
-                except (CloudStorageTransientError, zstd.ZstdError) as e:
-                    logger.warning(f"缓存加载失败，将重新生成 Target {self.name}：{e}")
+                else:
+                    logger.error("未找到缓存，无法进行加载")
+                    sys.exit(1)
+            else:
+                if not cache_exists:
+                    logger.info(f"未找到对应的缓存，开始重新生成缓存：{self.operations.build.command}")
                     self.prepare_deps(config, app_name, cache_backend)
                     self.operations.build.execute()
-                    cache_exists = False
 
-            if not cache_exists:
-                logger.info(f"正在存入缓存，路径：{self.cache_path}")
-                try:
-                    cache.save()
-                except CloudStorageTransientError as e:
-                    logger.warning(f"上传缓存失败，将跳过云端缓存：{e}")
+                if cache_exists:
+                    logger.info("找到缓存，直接从缓存加载...")
+                    try:
+                        cache.load()
+                    except (CloudStorageTransientError, CacheCorruptionError) as e:
+                        logger.warning(f"缓存加载失败，将重新生成 Target {self.name}：{e}")
+                        self.prepare_deps(config, app_name, cache_backend)
+                        self.operations.build.execute()
+                        cache_exists = False
+
+                if not cache_exists:
+                    logger.info(f"正在存入缓存，路径：{self.cache_path}")
+                    try:
+                        cache.save()
+                    except CloudStorageTransientError as e:
+                        logger.warning(f"上传缓存失败，将跳过云端缓存：{e}")
 
         elapsed = time.time() - start_time
         logger.success(f"Target {self.name} 执行完毕！")

@@ -2,11 +2,27 @@ import os
 from unittest import mock
 
 import pytest
-import zstandard as zstd
 
-from quack.cache import TargetCacheBackendTypeCloud
+from quack.cache import TargetCacheBackendTypeCloud, TargetCacheBackendTypeLocal
 from quack.config import Config
-from quack.exceptions import CloudStorageError, CloudStorageTransientError
+from quack.exceptions import CacheCorruptionError, CloudStorageError, CloudStorageTransientError
+
+
+class TestTargetCacheBackendTypeLocal:
+    def test_load_wraps_corrupt_archive_as_cache_corruption(self, tmp_path, monkeypatch, mock_test_spec: mock.Mock):
+        monkeypatch.setattr("quack.cache.xdg_cache_home", lambda: tmp_path)
+
+        config = Config.model_construct()
+        target = mock_test_spec.targets["quack:test"]
+        target._checksum_value = ""
+        backend = TargetCacheBackendTypeLocal(config, mock_test_spec.app_name)
+
+        os.makedirs(backend.get_cache_path(target), exist_ok=True)
+        with open(backend.get_archive_path(target), "wb") as f:
+            _ = f.write(b"not a zstd archive")
+
+        with pytest.raises(CacheCorruptionError):
+            backend.load(target)
 
 
 class TestTargetCacheBackendTypeCloud:
@@ -125,8 +141,7 @@ class TestTargetCacheBackendTypeCloud:
         backend = TargetCacheBackendTypeCloud(config, mock_test_spec.app_name)
 
         mock_local_backend.return_value.exists.return_value = True
-        # First call (local) raises; second call (after re-download) succeeds
-        mock_local_backend.return_value.load.side_effect = [zstd.ZstdError("did not decompress full frame"), None]
+        mock_local_backend.return_value.load.side_effect = [CacheCorruptionError("缓存归档解压失败"), None]
 
         backend.load(target)
 
@@ -152,9 +167,9 @@ class TestTargetCacheBackendTypeCloud:
         backend = TargetCacheBackendTypeCloud(config, mock_test_spec.app_name)
 
         mock_local_backend.return_value.exists.return_value = False
-        mock_local_backend.return_value.load.side_effect = zstd.ZstdError("did not decompress full frame")
+        mock_local_backend.return_value.load.side_effect = CacheCorruptionError("缓存归档解压失败")
 
-        with pytest.raises(zstd.ZstdError):
+        with pytest.raises(CacheCorruptionError):
             backend.load(target)
 
         assert mock_rmtree.called

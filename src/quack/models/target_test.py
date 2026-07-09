@@ -1,11 +1,63 @@
+from typing import ClassVar, cast
 from unittest import mock
 
 import pytest
 from pydantic import ValidationError
 
+from quack.cache import TargetCacheBackendType
 from quack.config import Config
-from quack.exceptions import CloudStorageError, CloudStorageTransientError
+from quack.exceptions import CacheCorruptionError, CloudStorageError, CloudStorageTransientError
 from quack.models.target import Target, TargetExecutionMode
+
+
+class RecordingCacheBackend:
+    NAME: ClassVar[str] = "recording"
+    exists_result: ClassVar[bool] = False
+    exists_error: ClassVar[Exception | None] = None
+    load_error: ClassVar[Exception | None] = None
+    save_error: ClassVar[Exception | None] = None
+    exists_calls: ClassVar[int] = 0
+    load_calls: ClassVar[int] = 0
+    save_calls: ClassVar[int] = 0
+
+    def __init__(self, _config: Config, _app_name: str) -> None:
+        pass
+
+    def exists(self, _target: Target) -> bool:
+        type(self).exists_calls += 1
+        error = type(self).exists_error
+        if error is not None:
+            raise error
+        return type(self).exists_result
+
+    def load(self, _target: Target) -> None:
+        type(self).load_calls += 1
+        error = type(self).load_error
+        if error is not None:
+            raise error
+
+    def save(self, _target: Target) -> None:
+        type(self).save_calls += 1
+        error = type(self).save_error
+        if error is not None:
+            raise error
+
+
+def reset_recording_cache_backend(
+    *,
+    exists_result: bool = False,
+    exists_error: Exception | None = None,
+    load_error: Exception | None = None,
+    save_error: Exception | None = None,
+) -> type[TargetCacheBackendType]:
+    RecordingCacheBackend.exists_result = exists_result
+    RecordingCacheBackend.exists_error = exists_error
+    RecordingCacheBackend.load_error = load_error
+    RecordingCacheBackend.save_error = save_error
+    RecordingCacheBackend.exists_calls = 0
+    RecordingCacheBackend.load_calls = 0
+    RecordingCacheBackend.save_calls = 0
+    return cast(type[TargetCacheBackendType], RecordingCacheBackend)
 
 
 class TestTarget:
@@ -40,132 +92,154 @@ class TestTarget:
     def test_cache_archive_filename(self, mock_test_spec: mock.Mock):
         assert mock_test_spec.targets["quack:test"].cache_archive_filename == "quack:test.tar.zst"
 
-    @mock.patch("quack.cache.TargetCache")
-    def test_execute_deps_only(self, mock_target_cache, mock_test_spec: mock.Mock):
+    def test_execute_deps_only(self, mock_test_spec: mock.Mock):
         config = Config.model_construct()
         target = mock_test_spec.targets["quack:test"]
         target._checksum_value = ""
+        cache_backend = reset_recording_cache_backend()
 
         # 当 mode=TargetExecutionMode.DEPS_ONLY 仅构建依赖项
-        mock_target_cache.return_value.hit.return_value = False
         target.execute(
             config,
             mock_test_spec.app_name,
-            mock.Mock,
+            cache_backend,
             mode=TargetExecutionMode.DEPS_ONLY,
         )
 
-    @mock.patch("quack.cache.TargetCache")
-    def test_execute_cache_hit(self, mock_target_cache, mock_test_spec: mock.Mock):
+        assert RecordingCacheBackend.exists_calls == 0
+        assert RecordingCacheBackend.load_calls == 0
+        assert RecordingCacheBackend.save_calls == 0
+
+    def test_execute_cache_hit(self, mock_test_spec: mock.Mock):
         config = Config.model_construct()
         target = mock_test_spec.targets["quack:test"]
         target._checksum_value = ""
+        cache_backend = reset_recording_cache_backend(exists_result=True)
 
         # 当缓存命中时，直接加载缓存
-        mock_target_cache.return_value.hit.return_value = True
-        target.execute(config, mock_test_spec.app_name, mock.Mock)
-        mock_target_cache.return_value.load.assert_called_once()
+        target.execute(config, mock_test_spec.app_name, cache_backend)
+        assert RecordingCacheBackend.load_calls == 1
 
-    @mock.patch("quack.cache.TargetCache")
-    def test_execute_rebuilds_after_transient_cache_hit_failure(self, mock_target_cache, mock_test_spec: mock.Mock):
+    def test_execute_rebuilds_after_transient_cache_hit_failure(self, mock_test_spec: mock.Mock):
         config = Config.model_construct()
         target = mock_test_spec.targets["quack:test"]
         target._checksum_value = ""
-
-        mock_target_cache.return_value.hit.side_effect = CloudStorageTransientError(
-            "检查文件是否存在失败",
-            "Could not connect to the endpoint URL",
+        cache_backend = reset_recording_cache_backend(
+            exists_error=CloudStorageTransientError(
+                "检查文件是否存在失败",
+                "Could not connect to the endpoint URL",
+            )
         )
+
         with mock.patch("quack.models.command.Command.execute") as mock_build:
-            target.execute(config, mock_test_spec.app_name, mock.Mock)
+            target.execute(config, mock_test_spec.app_name, cache_backend)
 
         mock_build.assert_called_once()
-        mock_target_cache.return_value.load.assert_not_called()
-        mock_target_cache.return_value.save.assert_called_once()
+        assert RecordingCacheBackend.load_calls == 0
+        assert RecordingCacheBackend.save_calls == 1
 
-    @mock.patch("quack.cache.TargetCache")
-    def test_execute_rebuilds_after_transient_cache_load_failure(self, mock_target_cache, mock_test_spec: mock.Mock):
+    def test_execute_rebuilds_after_transient_cache_load_failure(self, mock_test_spec: mock.Mock):
         config = Config.model_construct()
         target = mock_test_spec.targets["quack:test"]
         target._checksum_value = ""
-
-        mock_target_cache.return_value.hit.return_value = True
-        mock_target_cache.return_value.load.side_effect = CloudStorageTransientError(
-            "下载文件失败",
-            "IncompleteBody",
-            code="IncompleteBody",
+        cache_backend = reset_recording_cache_backend(
+            exists_result=True,
+            load_error=CloudStorageTransientError(
+                "下载文件失败",
+                "IncompleteBody",
+                code="IncompleteBody",
+            ),
         )
+
         with mock.patch("quack.models.command.Command.execute") as mock_build:
-            target.execute(config, mock_test_spec.app_name, mock.Mock)
+            target.execute(config, mock_test_spec.app_name, cache_backend)
 
-        mock_target_cache.return_value.load.assert_called_once()
+        assert RecordingCacheBackend.load_calls == 1
         mock_build.assert_called_once()
-        mock_target_cache.return_value.save.assert_called_once()
+        assert RecordingCacheBackend.save_calls == 1
 
-    @mock.patch("quack.cache.TargetCache")
-    def test_execute_raises_non_transient_cache_load_failure(self, mock_target_cache, mock_test_spec: mock.Mock):
+    def test_execute_rebuilds_after_corrupt_cache_load(self, mock_test_spec: mock.Mock):
         config = Config.model_construct()
         target = mock_test_spec.targets["quack:test"]
         target._checksum_value = ""
-
-        mock_target_cache.return_value.hit.return_value = True
-        mock_target_cache.return_value.load.side_effect = CloudStorageError(
-            "下载文件失败",
-            "AccessDenied",
-            code="AccessDenied",
+        cache_backend = reset_recording_cache_backend(
+            exists_result=True,
+            load_error=CacheCorruptionError("缓存归档解压失败"),
         )
+
+        with mock.patch("quack.models.command.Command.execute") as mock_build:
+            target.execute(config, mock_test_spec.app_name, cache_backend)
+
+        assert RecordingCacheBackend.load_calls == 1
+        mock_build.assert_called_once()
+        assert RecordingCacheBackend.save_calls == 1
+
+    def test_execute_raises_non_transient_cache_load_failure(self, mock_test_spec: mock.Mock):
+        config = Config.model_construct()
+        target = mock_test_spec.targets["quack:test"]
+        target._checksum_value = ""
+        cache_backend = reset_recording_cache_backend(
+            exists_result=True,
+            load_error=CloudStorageError(
+                "下载文件失败",
+                "AccessDenied",
+                code="AccessDenied",
+            ),
+        )
+
         with mock.patch("quack.models.command.Command.execute") as mock_build, pytest.raises(CloudStorageError):
-            target.execute(config, mock_test_spec.app_name, mock.Mock)
+            target.execute(config, mock_test_spec.app_name, cache_backend)
 
         mock_build.assert_not_called()
-        mock_target_cache.return_value.save.assert_not_called()
+        assert RecordingCacheBackend.save_calls == 0
 
-    @mock.patch("quack.cache.TargetCache")
-    def test_execute_ignores_transient_cache_save_failure(self, mock_target_cache, mock_test_spec: mock.Mock):
+    def test_execute_ignores_transient_cache_save_failure(self, mock_test_spec: mock.Mock):
         config = Config.model_construct()
         target = mock_test_spec.targets["quack:test"]
         target._checksum_value = ""
-
-        mock_target_cache.return_value.hit.return_value = False
-        mock_target_cache.return_value.save.side_effect = CloudStorageTransientError(
-            "上传文件失败",
-            "IncompleteBody",
-            code="IncompleteBody",
+        cache_backend = reset_recording_cache_backend(
+            exists_result=False,
+            save_error=CloudStorageTransientError(
+                "上传文件失败",
+                "IncompleteBody",
+                code="IncompleteBody",
+            ),
         )
+
         with mock.patch("quack.models.command.Command.execute") as mock_build:
-            target.execute(config, mock_test_spec.app_name, mock.Mock)
+            target.execute(config, mock_test_spec.app_name, cache_backend)
 
         mock_build.assert_called_once()
-        mock_target_cache.return_value.save.assert_called_once()
+        assert RecordingCacheBackend.save_calls == 1
 
-    @mock.patch("quack.cache.TargetCache")
-    def test_execute_raises_non_transient_cache_save_failure(self, mock_target_cache, mock_test_spec: mock.Mock):
+    def test_execute_raises_non_transient_cache_save_failure(self, mock_test_spec: mock.Mock):
         config = Config.model_construct()
         target = mock_test_spec.targets["quack:test"]
         target._checksum_value = ""
-
-        mock_target_cache.return_value.hit.return_value = False
-        mock_target_cache.return_value.save.side_effect = CloudStorageError(
-            "上传文件失败",
-            "AccessDenied",
-            code="AccessDenied",
+        cache_backend = reset_recording_cache_backend(
+            exists_result=False,
+            save_error=CloudStorageError(
+                "上传文件失败",
+                "AccessDenied",
+                code="AccessDenied",
+            ),
         )
-        with mock.patch("quack.models.command.Command.execute"), pytest.raises(CloudStorageError):
-            target.execute(config, mock_test_spec.app_name, mock.Mock)
 
-    @mock.patch("quack.cache.TargetCache")
-    def test_execute_load_only(self, mock_target_cache, mock_test_spec: mock.Mock):
+        with mock.patch("quack.models.command.Command.execute"), pytest.raises(CloudStorageError):
+            target.execute(config, mock_test_spec.app_name, cache_backend)
+
+    def test_execute_load_only(self, mock_test_spec: mock.Mock):
         config = Config.model_construct()
         target = mock_test_spec.targets["quack:test"]
         target._checksum_value = ""
+        cache_backend = reset_recording_cache_backend(exists_result=False)
 
         # 当 mode=TargetExecutionMode.LOAD_ONLY 且缓存未命中时，应该退出
-        mock_target_cache.return_value.hit.return_value = False
         with pytest.raises(SystemExit):
             target.execute(
                 config,
                 mock_test_spec.app_name,
-                mock.Mock,
+                cache_backend,
                 mode=TargetExecutionMode.LOAD_ONLY,
             )
 

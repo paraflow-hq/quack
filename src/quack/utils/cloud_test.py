@@ -39,11 +39,29 @@ def _s3_upload_error_from_client_error(code: str) -> S3UploadFailedError:
         return e
 
 
+def _s3_upload_error_from_message(code: str) -> S3UploadFailedError:
+    return S3UploadFailedError(
+        f"Failed to upload cache.tar.zst: An error occurred ({code}) when calling the PutObject operation: {code}"
+    )
+
+
 def test_upload_wraps_incomplete_body_as_transient_error(tmp_path: Path):
     local_file = tmp_path / "cache.tar.zst"
     local_file.write_bytes(b"cache")
 
     client = _cloud_client_with_upload_error(_s3_upload_error_from_client_error("IncompleteBody"))
+
+    with pytest.raises(CloudStorageTransientError) as exc_info:
+        client.upload(str(local_file), "dest/cache.tar.zst")
+
+    assert exc_info.value.code == "IncompleteBody"
+
+
+def test_upload_extracts_error_code_from_s3_transfer_message(tmp_path: Path):
+    local_file = tmp_path / "cache.tar.zst"
+    local_file.write_bytes(b"cache")
+
+    client = _cloud_client_with_upload_error(_s3_upload_error_from_message("IncompleteBody"))
 
     with pytest.raises(CloudStorageTransientError) as exc_info:
         client.upload(str(local_file), "dest/cache.tar.zst")

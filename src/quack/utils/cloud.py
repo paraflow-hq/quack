@@ -48,6 +48,8 @@ TRANSIENT_NETWORK_ERRORS = (
     ReadTimeoutError,
 )
 
+CLIENT_ERROR_MESSAGE_RE = re.compile(r"An error occurred \(([^)]+)\) when calling the \w+ operation")
+
 
 @dataclass
 class CloudFileMetadata:
@@ -88,11 +90,7 @@ def _extract_error_code(error: Exception) -> str:
         if isinstance(current_error, ClientError):
             return _get_client_error_code(current_error)
 
-        match = re.search(r"An error occurred \(([^)]+)\)", str(current_error))
-        if match:
-            return match.group(1)
-
-        match = re.search(r"\(([^)]+)\)", str(current_error))
+        match = CLIENT_ERROR_MESSAGE_RE.search(str(current_error))
         if match:
             return match.group(1)
 

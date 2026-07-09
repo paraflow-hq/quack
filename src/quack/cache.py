@@ -15,7 +15,7 @@ from xdg_base_dirs import xdg_cache_home
 
 from quack.config import Config
 from quack.consts import CACHE_METADATA_FILENAME
-from quack.exceptions import ChecksumError, CloudStorageTransientError
+from quack.exceptions import CacheCorruptionError, CloudStorageTransientError
 from quack.models.target import Target
 from quack.utils.archiver import Archiver
 from quack.utils.ci_environment import CIEnvironment
@@ -69,7 +69,10 @@ class TargetCacheBackendTypeLocal:
         archive_path = self.get_archive_path(target)
         size = os.path.getsize(archive_path)
         logger.info(f"正在从本地加载 Target {target.name} 的缓存（大小：{format_size(size)}）...")
-        Archiver.extract(archive_path)
+        try:
+            Archiver.extract(archive_path)
+        except zstd.ZstdError as e:
+            raise CacheCorruptionError(f"缓存归档解压失败：{archive_path}") from e
         metadata_path = self.get_metadata_path(target)
         if os.path.exists(metadata_path):
             os.utime(metadata_path, None)
@@ -208,7 +211,7 @@ class TargetCacheBackendTypeCloud:
                 if update_access_time:
                     self.update_access_time(target)
                 return
-            except (ChecksumError, zstd.ZstdError):
+            except CacheCorruptionError:
                 logger.warning("本地缓存已损坏，从云存储重新下载")
                 shutil.rmtree(self.local_backend.get_cache_path(target), ignore_errors=True)
 
@@ -217,7 +220,7 @@ class TargetCacheBackendTypeCloud:
             self.cloud_client.download(self.get_archive_path(target), self.local_backend.get_archive_path(target))
             self.cloud_client.download(self.get_metadata_path(target), self.local_backend.get_metadata_path(target))
             self.local_backend.load(target)
-        except zstd.ZstdError:
+        except CacheCorruptionError:
             logger.warning(f"云存储中 Target {target.name} 的缓存已损坏，将重新生成")
             shutil.rmtree(self.local_backend.get_cache_path(target), ignore_errors=True)
             raise
