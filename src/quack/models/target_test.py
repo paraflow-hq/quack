@@ -67,6 +67,23 @@ class TestTarget:
         mock_target_cache.return_value.load.assert_called_once()
 
     @mock.patch("quack.cache.TargetCache")
+    def test_execute_rebuilds_after_transient_cache_hit_failure(self, mock_target_cache, mock_test_spec: mock.Mock):
+        config = Config.model_construct()
+        target = mock_test_spec.targets["quack:test"]
+        target._checksum_value = ""
+
+        mock_target_cache.return_value.hit.side_effect = CloudStorageTransientError(
+            "检查文件是否存在失败",
+            "Could not connect to the endpoint URL",
+        )
+        with mock.patch("quack.models.command.Command.execute") as mock_build:
+            target.execute(config, mock_test_spec.app_name, mock.Mock)
+
+        mock_build.assert_called_once()
+        mock_target_cache.return_value.load.assert_not_called()
+        mock_target_cache.return_value.save.assert_called_once()
+
+    @mock.patch("quack.cache.TargetCache")
     def test_execute_rebuilds_after_transient_cache_load_failure(self, mock_target_cache, mock_test_spec: mock.Mock):
         config = Config.model_construct()
         target = mock_test_spec.targets["quack:test"]

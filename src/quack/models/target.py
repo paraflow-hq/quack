@@ -95,7 +95,13 @@ class Target(BaseModel):
         logger.info(f"正在查找 Target {self.name} 的缓存...")
 
         cache = TargetCache(config, app_name, self, cache_backend)
-        cache_exists = cache.hit()
+        try:
+            cache_exists = cache.hit()
+        except CloudStorageTransientError as e:
+            if mode == TargetExecutionMode.LOAD_ONLY:
+                raise
+            logger.warning(f"缓存命中检查失败，将重新生成 Target {self.name}：{e}")
+            cache_exists = False
 
         if mode == TargetExecutionMode.DEPS_ONLY:
             self.prepare_deps(config, app_name, cache_backend)

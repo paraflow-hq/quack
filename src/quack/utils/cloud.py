@@ -6,11 +6,13 @@ import re
 from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import datetime
+from typing import NoReturn
 
 import boto3
-from boto3.exceptions import S3TransferFailedError, S3UploadFailedError
+from boto3.exceptions import Boto3Error
 from botocore.config import Config as BotocoreConfig
 from botocore.exceptions import (
+    BotoCoreError,
     ClientError,
     ConnectionClosedError,
     ConnectTimeoutError,
@@ -59,32 +61,51 @@ def _get_client_error_code(error: ClientError) -> str:
     return str(code)
 
 
+def _iter_error_chain(error: Exception) -> Iterator[Exception]:
+    seen: set[int] = set()
+    pending = [error]
+    while pending:
+        current_error = pending.pop()
+        if id(current_error) in seen:
+            continue
+
+        seen.add(id(current_error))
+        yield current_error
+
+        pending.extend(
+            wrapped_error
+            for wrapped_error in [
+                current_error.__context__,
+                current_error.__cause__,
+                getattr(current_error, "last_exception", None),
+            ]
+            if isinstance(wrapped_error, Exception)
+        )
+
+
 def _extract_error_code(error: Exception) -> str:
-    if isinstance(error, ClientError):
-        return _get_client_error_code(error)
+    for current_error in _iter_error_chain(error):
+        if isinstance(current_error, ClientError):
+            return _get_client_error_code(current_error)
 
-    for wrapped_error in [error.__context__, error.__cause__]:
-        if isinstance(wrapped_error, ClientError):
-            return _get_client_error_code(wrapped_error)
+        match = re.search(r"An error occurred \(([^)]+)\)", str(current_error))
+        if match:
+            return match.group(1)
 
-    match = re.search(r"An error occurred \(([^)]+)\)", str(error))
-    if match:
-        return match.group(1)
+        match = re.search(r"\(([^)]+)\)", str(current_error))
+        if match:
+            return match.group(1)
 
-    match = re.search(r"\(([^)]+)\)", str(error))
-    return match.group(1) if match else ""
+    return ""
 
 
 def _is_transient_error(error: Exception) -> bool:
-    wrapped_errors = [error.__context__, error.__cause__]
-    if isinstance(error, TRANSIENT_NETWORK_ERRORS) or any(
-        isinstance(wrapped_error, TRANSIENT_NETWORK_ERRORS) for wrapped_error in wrapped_errors
-    ):
+    if any(isinstance(current_error, TRANSIENT_NETWORK_ERRORS) for current_error in _iter_error_chain(error)):
         return True
     return _extract_error_code(error) in TRANSIENT_ERROR_CODES
 
 
-def _raise_cloud_storage_error(message: str, path: str, error: Exception) -> None:
+def _raise_cloud_storage_error(message: str, path: str, error: Exception) -> NoReturn:
     code = _extract_error_code(error)
     exception_class = CloudStorageTransientError if _is_transient_error(error) else CloudStorageError
     raise exception_class(f"{message}：{path}", str(error), code=code or None) from error
@@ -187,7 +208,9 @@ class CloudClient:
         except ClientError as e:
             if e.response["Error"]["Code"] == "404":
                 return False
-            raise CloudStorageError(f"检查文件是否存在失败：{path}", str(e)) from e
+            _raise_cloud_storage_error("检查文件是否存在失败", path, e)
+        except (Boto3Error, BotoCoreError) as e:
+            _raise_cloud_storage_error("检查文件是否存在失败", path, e)
 
     def upload(self, path: str, dest: str) -> None:
         """上传文件或目录"""
@@ -207,7 +230,7 @@ class CloudClient:
                         self._client.upload_file(local_file, self._bucket_name, object_key)
             else:
                 raise CloudStorageError(f"路径不存在或不是文件/目录：{path}")
-        except (ClientError, S3TransferFailedError, S3UploadFailedError, *TRANSIENT_NETWORK_ERRORS) as e:
+        except (ClientError, Boto3Error, BotoCoreError) as e:
             _raise_cloud_storage_error("上传文件失败", path, e)
 
     def download(self, path: str, dest: str) -> None:
@@ -245,7 +268,7 @@ class CloudClient:
                 if dir_path:
                     os.makedirs(dir_path, exist_ok=True)
                 self._client.download_file(self._bucket_name, key, dest)
-        except (ClientError, S3TransferFailedError, *TRANSIENT_NETWORK_ERRORS) as e:
+        except (ClientError, Boto3Error, BotoCoreError) as e:
             _raise_cloud_storage_error("下载文件失败", path, e)
 
     def read(self, path: str) -> str | None:
