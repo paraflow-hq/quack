@@ -3,6 +3,7 @@ from unittest import mock
 
 import pytest
 from boto3.exceptions import RetriesExceededError, S3UploadFailedError
+from boto3.s3.transfer import TransferConfig
 from botocore.exceptions import ClientError, EndpointConnectionError, ReadTimeoutError
 
 from quack.exceptions import CloudStorageError, CloudStorageTransientError
@@ -20,6 +21,7 @@ def _cloud_client_with_upload_error(error: Exception) -> CloudClient:
 
 def _cloud_client_with_download_error(error: Exception) -> CloudClient:
     client = CloudClient.__new__(CloudClient)
+    client._download_config = TransferConfig(num_download_attempts=2)
     client._base_path = ""
     client._bucket_name = "bucket"
     client._client = mock.Mock()
