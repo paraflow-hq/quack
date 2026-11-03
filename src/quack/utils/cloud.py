@@ -10,6 +10,7 @@ from typing import NoReturn
 
 import boto3
 from boto3.exceptions import Boto3Error
+from boto3.s3.transfer import TransferConfig
 from botocore.config import Config as BotocoreConfig
 from botocore.exceptions import (
     BotoCoreError,
@@ -121,6 +122,13 @@ class CloudClient:
         endpoint: str,
     ):
         self._prefix = prefix
+        # Cache transport failures must reach the existing rebuild fallback before CI expires.
+        transport_config = BotocoreConfig(
+            connect_timeout=10,
+            read_timeout=30,
+            retries={"mode": "standard", "total_max_attempts": 2},
+        )
+        self._download_config = TransferConfig(num_download_attempts=2)
 
         # 解析协议和 bucket
         if prefix.startswith("oss://"):
@@ -154,9 +162,8 @@ class CloudClient:
                     endpoint_url=s3_endpoint,
                     aws_access_key_id=access_key_id,
                     aws_secret_access_key=access_key_secret,
-                    config=BotocoreConfig(
-                        signature_version="s3",
-                        s3={"addressing_style": "virtual"},
+                    config=transport_config.merge(
+                        BotocoreConfig(signature_version="s3", s3={"addressing_style": "virtual"})
                     ),
                 )
             elif endpoint:
@@ -166,6 +173,7 @@ class CloudClient:
                     endpoint_url=endpoint,
                     aws_access_key_id=access_key_id,
                     aws_secret_access_key=access_key_secret,
+                    config=transport_config,
                 )
             else:
                 # 使用标准 AWS S3
@@ -174,6 +182,7 @@ class CloudClient:
                     region_name=region or "us-east-1",
                     aws_access_key_id=access_key_id,
                     aws_secret_access_key=access_key_secret,
+                    config=transport_config,
                 )
         except NoCredentialsError as e:
             raise CloudStorageError("云存储认证失败", str(e)) from e
@@ -259,13 +268,13 @@ class CloudClient:
                     dir_path = os.path.dirname(local_file)
                     if dir_path:
                         os.makedirs(dir_path, exist_ok=True)
-                    self._client.download_file(self._bucket_name, obj_key, local_file)
+                    self._client.download_file(self._bucket_name, obj_key, local_file, Config=self._download_config)
             else:
                 # 下载单个文件
                 dir_path = os.path.dirname(dest)
                 if dir_path:
                     os.makedirs(dir_path, exist_ok=True)
-                self._client.download_file(self._bucket_name, key, dest)
+                self._client.download_file(self._bucket_name, key, dest, Config=self._download_config)
         except (ClientError, Boto3Error, BotoCoreError) as e:
             _raise_cloud_storage_error("下载文件失败", path, e)
 
