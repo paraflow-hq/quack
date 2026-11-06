@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 import sys
 import time
 from enum import Enum
@@ -13,7 +14,7 @@ from loguru import logger
 from pydantic import Field
 
 from quack.config import Config
-from quack.exceptions import CacheCorruptionError, CloudStorageTransientError
+from quack.exceptions import CacheCorruptionError, CacheSecurityError, CloudStorageTransientError
 from quack.models.base import BaseModel
 from quack.models.command import Command
 from quack.models.dependency import Dependency, DependencyTypeTarget
@@ -47,6 +48,7 @@ class Target(BaseModel):
     operations: TargetOperations
 
     _checksum_value: str | None = None
+    expected_archive_checksum: str | None = None
 
     @property
     def checksum_value(self) -> str:
@@ -56,6 +58,8 @@ class Target(BaseModel):
 
     @checksum_value.setter
     def checksum_value(self, value: str) -> None:
+        if not re.fullmatch(r"[a-f0-9]{64}", value):
+            raise CacheSecurityError("Invalid target checksum")
         self._checksum_value = value
 
     @property

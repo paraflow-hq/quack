@@ -2,92 +2,238 @@
 
 from __future__ import annotations
 
+import fnmatch
 import glob
 import hashlib
 import os
 import shutil
+import stat
 import tarfile
 import tempfile
+import uuid
 from collections.abc import Iterable
-from pathlib import Path
+from contextlib import suppress
+from pathlib import Path, PurePosixPath
+from typing import IO
 
 import zstandard as zstd
+
+from quack.config import CacheLimits
+from quack.exceptions import CacheSecurityError
 
 
 class Archiver:
     @staticmethod
     def archive(paths: Iterable[str], archive_path: str) -> None:
-        with tempfile.NamedTemporaryFile(suffix=".tar", delete=False) as tmp_tar:
-            tmp_tar_path = tmp_tar.name
-
-        try:
-            with tarfile.open(tmp_tar_path, "w") as tar:
-                for path in paths:
-                    # 展开通配符
-                    matches = glob.glob(path)
+        with tempfile.TemporaryDirectory() as staging:
+            tar_path = Path(staging) / "archive.tar"
+            seen: set[str] = set()
+            with tarfile.open(tar_path, "w", dereference=True) as tar:
+                for pattern in sorted(paths):
+                    matches = glob.glob(pattern)
                     if not matches:
-                        raise FileNotFoundError(f"未找到匹配的文件：{path}")
-
-                    for matched_path in matches:
-                        tar.add(matched_path, arcname=matched_path)
-
-            with open(tmp_tar_path, "rb") as f_in:
-                tar_data = f_in.read()
-
-            cctx = zstd.ZstdCompressor()
-            compressed_data = cctx.compress(tar_data)
-
-            if dirname := os.path.dirname(archive_path):
-                os.makedirs(dirname, exist_ok=True)
-            with open(archive_path, "wb") as f_out:
-                f_out.write(compressed_data)
-        finally:
-            if os.path.exists(tmp_tar_path):
-                os.unlink(tmp_tar_path)
-
-    @staticmethod
-    def extract(archive_path: str, dest_path: str = ".") -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            with open(archive_path, "rb") as f_in:
-                compressed_data = f_in.read()
-
-            dctx = zstd.ZstdDecompressor()
-            tar_data = dctx.decompress(compressed_data)
-
-            with tempfile.NamedTemporaryFile(suffix=".tar", delete=False) as tmp_tar:
-                tmp_tar.write(tar_data)
-                tmp_tar_path = tmp_tar.name
-
+                        raise FileNotFoundError(f"No output matches {pattern}")
+                    for match in sorted(matches):
+                        root = Path(match)
+                        for path in [root, *sorted(root.rglob("*"))] if root.is_dir() else [root]:
+                            if path.is_symlink() or not (path.is_file() or path.is_dir()):
+                                raise CacheSecurityError("Cache outputs cannot contain links or special files")
+                            name = path.as_posix().lstrip("/")
+                            if name not in seen:
+                                tar.add(path, arcname=name, recursive=False)
+                                seen.add(name)
+            Path(archive_path).parent.mkdir(parents=True, exist_ok=True)
+            temporary_path = None
             try:
-                with tarfile.open(tmp_tar_path, "r") as tar:
-                    tar.extractall(temp_dir, filter="data")
+                with (
+                    tar_path.open("rb") as source,
+                    tempfile.NamedTemporaryFile(dir=Path(archive_path).parent, delete=False) as output,
+                    zstd.ZstdCompressor().stream_writer(output, closefd=False) as compressor,
+                ):
+                    temporary_path = output.name
+                    shutil.copyfileobj(source, compressor, length=1024**2)
+                os.replace(temporary_path, archive_path)
+                temporary_path = None
             finally:
-                os.unlink(tmp_tar_path)
-
-            # 同步到目标目录，基于内容比较，相同内容的文件不会被覆盖
-            Archiver._sync_with_checksum(temp_dir, dest_path)
+                if temporary_path is not None:
+                    os.unlink(temporary_path)
 
     @staticmethod
-    def _sync_with_checksum(src_dir: str, dest_dir: str) -> None:
-        """基于内容比较同步文件，内容相同时保持目标文件的时间戳"""
-        src_path = Path(src_dir)
-        dest_path = Path(dest_dir)
+    def extract(
+        archive_path: str,
+        dest_path: str = ".",
+        *,
+        outputs: Iterable[str],
+        expected_checksum: str,
+        limits: CacheLimits | None = None,
+    ) -> None:
+        budget = limits or CacheLimits()
+        destination = Path(dest_path).resolve()
+        patterns = Archiver._output_patterns(outputs, destination)
+        with tempfile.TemporaryDirectory() as staging:
+            tar_path = Path(staging) / "archive.tar"
+            with (
+                os.fdopen(os.open(archive_path, os.O_RDONLY | os.O_NOFOLLOW), "rb") as source,
+                tar_path.open("wb") as output,
+            ):
+                if os.fstat(source.fileno()).st_size > budget.max_archive_bytes:
+                    raise CacheSecurityError("Cache archive exceeds its compressed size limit")
+                if hashlib.file_digest(source, "sha256").hexdigest() != expected_checksum:
+                    raise CacheSecurityError("Cache archive checksum mismatch")
+                source.seek(0)
+                with zstd.ZstdDecompressor(max_window_size=128 * 1024**2).stream_reader(source) as decompressor:
+                    expanded = 0
+                    while chunk := decompressor.read(1024**2):
+                        expanded += len(chunk)
+                        if expanded > budget.max_expanded_bytes:
+                            raise CacheSecurityError("Cache archive exceeds its expanded size limit")
+                        _ = output.write(chunk)
+            Archiver._validate_headers(tar_path, budget)
+            with tarfile.open(tar_path, "r:") as tar:
+                entries: list[tarfile.TarInfo] = []
+                seen: set[str] = set()
+                total = 0
+                for entry in tar:
+                    name = Archiver._member_name(entry.name)
+                    if name in seen:
+                        raise CacheSecurityError("Duplicate cache archive member")
+                    seen.add(name)
+                    if entry.issparse() or not (entry.isfile() or entry.isdir()):
+                        raise CacheSecurityError("Cache archive contains a link or special file")
+                    if not Archiver._allowed(name, patterns, directory=entry.isdir()):
+                        raise CacheSecurityError("Cache archive member is outside declared outputs")
+                    total += entry.size
+                    if (
+                        entry.size > budget.max_file_bytes
+                        or total > budget.max_expanded_bytes
+                        or len(entries) >= budget.max_entries
+                    ):
+                        raise CacheSecurityError("Cache archive exceeds its file or entry limit")
+                    Archiver._validate_destination(destination, name)
+                    entries.append(entry)
+                # Validate the entire archive and workspace before installing any member.
+                root_fd = os.open(destination, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+                try:
+                    for entry in entries:
+                        Archiver._install(tar, entry, root_fd)
+                finally:
+                    os.close(root_fd)
 
-        for src_file in src_path.rglob("*"):
-            if src_file.is_file():
-                rel_path = src_file.relative_to(src_path)
-                dest_file = dest_path / rel_path
+    @staticmethod
+    def _member_name(name: str) -> str:
+        parts = PurePosixPath(name).parts
+        if not parts or name.startswith("/") or "\\" in name or ".." in parts or "\x00" in name:
+            raise CacheSecurityError("Invalid cache archive path")
+        return "/".join(parts)
 
-                dest_file.parent.mkdir(parents=True, exist_ok=True)
+    @staticmethod
+    def _output_patterns(outputs: Iterable[str], destination: Path) -> list[tuple[str, ...]]:
+        result = []
+        for output in outputs:
+            path = Path(output)
+            if path.is_absolute():
+                try:
+                    path = path.relative_to(destination)
+                except ValueError as error:
+                    raise CacheSecurityError("Declared cache output is outside the workspace") from error
+            name = Archiver._member_name(path.as_posix())
+            result.append(PurePosixPath(name).parts)
+        return result
 
-                should_copy = True
-                if dest_file.exists():
-                    with open(src_file, "rb") as f1, open(dest_file, "rb") as f2:
-                        src_hash = hashlib.sha256(f1.read()).hexdigest()
-                        dest_hash = hashlib.sha256(f2.read()).hexdigest()
-                        should_copy = src_hash != dest_hash
+    @staticmethod
+    def _allowed(name: str, patterns: list[tuple[str, ...]], *, directory: bool) -> bool:
+        parts = PurePosixPath(name).parts
+        for pattern in patterns:
+            common = min(len(pattern), len(parts))
+            if (len(parts) >= len(pattern) or directory) and all(
+                fnmatch.fnmatchcase(parts[i], pattern[i]) for i in range(common)
+            ):
+                return True
+        return False
 
-                if should_copy:
-                    shutil.copy2(src_file, dest_file)
-                    # 更新时间戳为当前时间
-                    os.utime(dest_file, None)
+    @staticmethod
+    def _validate_headers(path: Path, limits: CacheLimits) -> None:
+        # Bound extension headers before tarfile allocates their PAX/long-name payloads.
+        with path.open("rb") as stream:
+            count = 0
+            while block := stream.read(512):
+                if block == b"\0" * 512:
+                    return
+                try:
+                    header = tarfile.TarInfo.frombuf(block, "utf-8", "surrogateescape")
+                except tarfile.HeaderError as error:
+                    raise CacheSecurityError("Invalid cache tar header") from error
+                count += 1
+                extension = header.type in (
+                    tarfile.XHDTYPE,
+                    tarfile.XGLTYPE,
+                    tarfile.GNUTYPE_LONGNAME,
+                    tarfile.GNUTYPE_LONGLINK,
+                )
+                limit = min(limits.max_file_bytes, 1024**2) if extension else limits.max_file_bytes
+                if count > limits.max_entries * 2 or header.size < 0 or header.size > limit:
+                    raise CacheSecurityError("Cache archive exceeds its header or file limit")
+                _ = stream.seek(((header.size + 511) // 512) * 512, os.SEEK_CUR)
+
+    @staticmethod
+    def _validate_destination(root: Path, name: str) -> None:
+        path = root
+        for part in PurePosixPath(name).parts:
+            path /= part
+            try:
+                mode = path.lstat().st_mode
+            except FileNotFoundError:
+                return
+            if stat.S_ISLNK(mode) or not (stat.S_ISREG(mode) or stat.S_ISDIR(mode)):
+                raise CacheSecurityError("Cache destination contains a link or special file")
+
+    @staticmethod
+    def _digest(stream: IO[bytes]) -> bytes:
+        digest = hashlib.sha256()
+        while chunk := stream.read(1024**2):
+            digest.update(chunk)
+        return digest.digest()
+
+    @staticmethod
+    def _install(tar: tarfile.TarFile, entry: tarfile.TarInfo, root_fd: int) -> None:
+        parts = PurePosixPath(Archiver._member_name(entry.name)).parts
+        parent_fd = os.dup(root_fd)
+        temporary = None
+        try:
+            directories = parts if entry.isdir() else parts[:-1]
+            for part in directories:
+                with suppress(FileExistsError):
+                    os.mkdir(part, dir_fd=parent_fd)
+                next_fd = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent_fd)
+                os.close(parent_fd)
+                parent_fd = next_fd
+            if entry.isdir():
+                return
+            source = tar.extractfile(entry)
+            if source is None:
+                raise CacheSecurityError("Missing cache archive member data")
+            with source:
+                try:
+                    existing_fd = os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent_fd)
+                except FileNotFoundError:
+                    existing_fd = None
+                if existing_fd is not None:
+                    with os.fdopen(existing_fd, "rb") as existing:
+                        if not stat.S_ISREG(os.fstat(existing.fileno()).st_mode):
+                            raise CacheSecurityError("Cache destination is not a regular file")
+                        if Archiver._digest(existing) == Archiver._digest(source):
+                            return
+                    source.seek(0)
+                temporary = f".quack-{uuid.uuid4().hex}"
+                fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=parent_fd)
+                with os.fdopen(fd, "wb") as output:
+                    shutil.copyfileobj(source, output, length=1024**2)
+                    os.fchmod(output.fileno(), entry.mode & 0o777)
+                os.replace(temporary, parts[-1], src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+                temporary = None
+        except OSError as error:
+            raise CacheSecurityError("Cache destination changed or cannot be safely installed") from error
+        finally:
+            if temporary is not None:
+                os.unlink(temporary, dir_fd=parent_fd)
+            os.close(parent_fd)
