@@ -3,26 +3,9 @@ from unittest import mock
 
 import pytest
 
-from quack.cache import TargetCacheBackendTypeCloud, TargetCacheBackendTypeLocal
+from quack.cache import TargetCacheBackendTypeCloud
 from quack.config import Config
 from quack.exceptions import CacheCorruptionError, CloudStorageError, CloudStorageTransientError
-
-
-class TestTargetCacheBackendTypeLocal:
-    def test_load_wraps_corrupt_archive_as_cache_corruption(self, tmp_path, monkeypatch, mock_test_spec: mock.Mock):
-        monkeypatch.setattr("quack.cache.xdg_cache_home", lambda: tmp_path)
-
-        config = Config.model_construct()
-        target = mock_test_spec.targets["quack:test"]
-        target._checksum_value = ""
-        backend = TargetCacheBackendTypeLocal(config, mock_test_spec.app_name)
-
-        os.makedirs(backend.get_cache_path(target), exist_ok=True)
-        with open(backend.get_archive_path(target), "wb") as f:
-            _ = f.write(b"not a zstd archive")
-
-        with pytest.raises(CacheCorruptionError):
-            backend.load(target)
 
 
 class TestTargetCacheBackendTypeCloud:

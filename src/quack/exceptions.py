@@ -20,3 +20,7 @@ class CloudStorageError(Exception):
 
 class CloudStorageTransientError(CloudStorageError):
     pass
+
+
+class CacheSecurityError(Exception):
+    pass

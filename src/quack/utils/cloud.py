@@ -3,6 +3,7 @@
 import fnmatch
 import os
 import re
+import tempfile
 from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import datetime
@@ -10,7 +11,6 @@ from typing import NoReturn
 
 import boto3
 from boto3.exceptions import Boto3Error
-from boto3.s3.transfer import TransferConfig
 from botocore.config import Config as BotocoreConfig
 from botocore.exceptions import (
     BotoCoreError,
@@ -24,7 +24,8 @@ from botocore.exceptions import (
     ReadTimeoutError,
 )
 
-from quack.exceptions import CloudStorageError, CloudStorageTransientError
+from quack.config import CacheLimits, CloudConfig
+from quack.exceptions import CacheSecurityError, CloudStorageError, CloudStorageTransientError
 
 TRANSIENT_ERROR_CODES = {
     "500",
@@ -113,79 +114,54 @@ def _raise_cloud_storage_error(message: str, path: str, error: Exception) -> NoR
 class CloudClient:
     """统一的云存储客户端（支持 OSS 和 S3，使用 boto3）"""
 
-    def __init__(
-        self,
-        prefix: str,
-        region: str,
-        access_key_id: str,
-        access_key_secret: str,
-        endpoint: str,
-    ):
-        self._prefix = prefix
-        # Cache transport failures must reach the existing rebuild fallback before CI expires.
+    def __init__(self, config: CloudConfig, limits: CacheLimits):
+        self._prefix = config.prefix
+        self._limits = limits
         transport_config = BotocoreConfig(
+            ignore_configured_endpoint_urls=True,
             connect_timeout=10,
             read_timeout=30,
             retries={"mode": "standard", "total_max_attempts": 2},
         )
-        self._download_config = TransferConfig(num_download_attempts=2)
-
-        # 解析协议和 bucket
-        if prefix.startswith("oss://"):
+        if config.prefix.startswith("oss://"):
             self._protocol = "oss"
-            parts = prefix[6:].split("/", 1)
-        elif prefix.startswith("s3://"):
+            parts = config.prefix[6:].split("/", 1)
+        elif config.prefix.startswith("s3://"):
             self._protocol = "s3"
-            parts = prefix[5:].split("/", 1)
+            parts = config.prefix[5:].split("/", 1)
         else:
-            raise ValueError(f"prefix 必须以 oss:// 或 s3:// 开头：{prefix}")
-
+            raise ValueError("Cache prefix must begin with oss:// or s3://")
+        if not parts[0]:
+            raise ValueError("Cache bucket is required")
         self._bucket_name = parts[0]
-        self._base_path = parts[1] if len(parts) > 1 else ""
-
-        # 初始化 boto3 客户端
+        self._base_path = parts[1].rstrip("/") if len(parts) > 1 else ""
+        credentials = {}
+        if config.access_key_id:
+            credentials = {
+                "aws_access_key_id": config.access_key_id,
+                "aws_secret_access_key": config.access_key_secret,
+            }
+            if config.session_token:
+                credentials["aws_session_token"] = config.session_token
+        endpoint = config.endpoint
+        if self._protocol == "oss":
+            if not endpoint:
+                raise ValueError("OSS cache requires an endpoint")
+            endpoint = endpoint.replace("://", "://s3.") if "://s3." not in endpoint else endpoint
+            transport_config = transport_config.merge(
+                BotocoreConfig(signature_version="s3", s3={"addressing_style": "virtual"})
+            )
+        region = config.region or ("auto" if ".r2.cloudflarestorage.com" in endpoint else "us-east-1")
         try:
-            if self._protocol == "oss":
-                # 阿里云 OSS S3 兼容 API
-                # 转换规则：在域名前加 s3. 前缀（如果还没有的话）
-                # 例如：https://oss-cn-beijing-internal.aliyuncs.com
-                #   -> https://s3.oss-cn-beijing-internal.aliyuncs.com
-                if not endpoint:
-                    raise ValueError("OSS 必须提供 endpoint")
-
-                # 转换为 S3 兼容 endpoint（在域名前加 s3. 前缀，避免重复）
-                s3_endpoint = endpoint.replace("://", "://s3.") if "://s3." not in endpoint else endpoint
-
-                # 使用阿里云官方推荐的配置
-                self._client = boto3.client(
-                    "s3",
-                    endpoint_url=s3_endpoint,
-                    aws_access_key_id=access_key_id,
-                    aws_secret_access_key=access_key_secret,
-                    config=transport_config.merge(
-                        BotocoreConfig(signature_version="s3", s3={"addressing_style": "virtual"})
-                    ),
-                )
-            elif endpoint:
-                # 其他云存储（MinIO 等）使用自定义端点
-                self._client = boto3.client(
-                    "s3",
-                    endpoint_url=endpoint,
-                    aws_access_key_id=access_key_id,
-                    aws_secret_access_key=access_key_secret,
-                    config=transport_config,
-                )
-            else:
-                # 使用标准 AWS S3
-                self._client = boto3.client(
-                    "s3",
-                    region_name=region or "us-east-1",
-                    aws_access_key_id=access_key_id,
-                    aws_secret_access_key=access_key_secret,
-                    config=transport_config,
-                )
-        except NoCredentialsError as e:
-            raise CloudStorageError("云存储认证失败", str(e)) from e
+            self._client = boto3.client(
+                "s3",
+                endpoint_url=endpoint or None,
+                region_name=region,
+                config=transport_config,
+                **credentials,
+            )
+        except NoCredentialsError as error:
+            raise CloudStorageError("Cache authentication failed") from error
 
     def _get_object_key(self, path: str) -> str:
         """将相对路径转换为对象键"""
@@ -240,54 +216,52 @@ class CloudClient:
         except (ClientError, Boto3Error, BotoCoreError) as e:
             _raise_cloud_storage_error("上传文件失败", path, e)
 
-    def download(self, path: str, dest: str) -> None:
-        """下载文件或目录"""
+    def download(self, path: str, dest: str, *, max_bytes: int | None = None) -> None:
+        """Download one exact object; neighboring keys never select directory mode."""
+        temporary_path = None
+        limit = max_bytes if max_bytes is not None else self._limits.max_archive_bytes
         try:
-            key = self._get_object_key(path)
-
-            # 检查是否是目录（通过列出对象判断）
-            objects = list(self._list_objects(key, max_keys=2))
-
-            if not objects:
-                raise CloudStorageError(f"云存储中不存在对象：{path}")
-
-            # 如果 key 以 / 结尾或有多个对象，视为目录
-            is_directory = key.endswith("/") or len(objects) > 1
-
-            if is_directory:
-                # 下载目录
-                os.makedirs(dest, exist_ok=True)
-                for obj in self._list_objects(key):
-                    obj_key = obj["Key"]
-                    # 计算本地路径
-                    rel_path = obj_key[len(key) :].lstrip("/")
-                    if not rel_path:
-                        # 跳过目录对象本身
-                        continue
-                    local_file = os.path.join(dest, rel_path)
-                    dir_path = os.path.dirname(local_file)
-                    if dir_path:
-                        os.makedirs(dir_path, exist_ok=True)
-                    self._client.download_file(self._bucket_name, obj_key, local_file, Config=self._download_config)
-            else:
-                # 下载单个文件
-                dir_path = os.path.dirname(dest)
-                if dir_path:
-                    os.makedirs(dir_path, exist_ok=True)
-                self._client.download_file(self._bucket_name, key, dest, Config=self._download_config)
-        except (ClientError, Boto3Error, BotoCoreError) as e:
-            _raise_cloud_storage_error("下载文件失败", path, e)
+            response = self._client.get_object(Bucket=self._bucket_name, Key=self._get_object_key(path))
+            body = response["Body"]
+            try:
+                if response["ContentLength"] > limit:
+                    raise CacheSecurityError("Cache object exceeds its compressed size limit")
+                os.makedirs(os.path.dirname(os.path.abspath(dest)), exist_ok=True)
+                with tempfile.NamedTemporaryFile(dir=os.path.dirname(os.path.abspath(dest)), delete=False) as output:
+                    temporary_path = output.name
+                    total = 0
+                    while chunk := body.read(1024**2):
+                        total += len(chunk)
+                        if total > limit:
+                            raise CacheSecurityError("Cache object exceeds its compressed size limit")
+                        _ = output.write(chunk)
+                os.replace(temporary_path, dest)
+                temporary_path = None
+            finally:
+                body.close()
+        except (ClientError, Boto3Error, BotoCoreError) as error:
+            _raise_cloud_storage_error("Cache download failed", path, error)
+        finally:
+            if temporary_path is not None:
+                os.unlink(temporary_path)
 
     def read(self, path: str) -> str | None:
-        """读取文件内容"""
         try:
-            key = self._get_object_key(path)
-            response = self._client.get_object(Bucket=self._bucket_name, Key=key)
-            return response["Body"].read().decode("utf-8")
-        except ClientError as e:
-            if e.response["Error"]["Code"] == "NoSuchKey":
+            response = self._client.get_object(Bucket=self._bucket_name, Key=self._get_object_key(path))
+            body = response["Body"]
+            try:
+                data = body.read(1024**2 + 1)
+                if len(data) > 1024**2:
+                    raise CacheSecurityError("Cache metadata exceeds its size limit")
+                return data.decode("utf-8")
+            finally:
+                body.close()
+        except ClientError as error:
+            if error.response["Error"]["Code"] in ("NoSuchKey", "404", "NotFound"):
                 return None
-            raise CloudStorageError(f"读取文件失败：{path}", str(e)) from e
+            _raise_cloud_storage_error("Cache metadata read failed", path, error)
+        except (Boto3Error, BotoCoreError) as error:
+            _raise_cloud_storage_error("Cache metadata read failed", path, error)
 
     def remove(self, path: str, recursive=False) -> None:
         """删除对象"""

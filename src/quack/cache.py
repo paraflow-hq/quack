@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import contextlib
+import hashlib
+import json
 import os
 import shutil
 from datetime import datetime, timedelta
@@ -13,9 +15,15 @@ import zstandard as zstd
 from loguru import logger
 from xdg_base_dirs import xdg_cache_home
 
-from quack.config import Config
+from quack.config import CacheAccess, Config
 from quack.consts import CACHE_METADATA_FILENAME
-from quack.exceptions import CacheCorruptionError, CloudStorageTransientError
+from quack.exceptions import (
+    CacheCorruptionError,
+    CacheSecurityError,
+    CloudStorageError,
+    CloudStorageTransientError,
+    ConfigError,
+)
 from quack.models.target import Target
 from quack.utils.archiver import Archiver
 from quack.utils.ci_environment import CIEnvironment
@@ -46,10 +54,20 @@ class TargetCacheBackendTypeLocal:
     CACHE_CLEAR_DURATION_DAYS: int = 7
     CACHE_EXPIRE_DAYS: int = 15
 
-    def __init__(self, _config: Config, app_name: str):
+    def __init__(self, config: Config, app_name: str):
         self._app_name: str = app_name
-
-        self._cache_base_path: str = os.path.join(xdg_cache_home(), "quack", app_name)
+        self._config = config
+        identity = [
+            config.cloud.endpoint.rstrip("/").lower(),
+            config.cloud.prefix.rstrip("/"),
+            config.cloud.region,
+            config.cloud.provider,
+            config.cache_namespace,
+            config.cache,
+            2,
+        ]
+        namespace = hashlib.sha256(json.dumps(identity).encode()).hexdigest()
+        self._cache_base_path = os.path.join(xdg_cache_home(), "quack", "v2", namespace, app_name)
 
     def get_cache_path(self, target: Target) -> str:
         return os.path.join(self._cache_base_path, target.cache_path)
@@ -61,16 +79,24 @@ class TargetCacheBackendTypeLocal:
         return os.path.join(self.get_cache_path(target), CACHE_METADATA_FILENAME)
 
     def exists(self, target: Target) -> bool:
-        return os.path.exists(self.get_metadata_path(target))
+        return os.path.isfile(self.get_metadata_path(target)) and os.path.isfile(self.get_archive_path(target))
 
     def load(self, target: Target) -> None:
-        # ossutil 自带 crc64 校验，不再需要 checksum，metadata 文件仅作为最后访问时间的标识
-        # Checksummer.verify(self.get_archive_path(target), self.get_metadata_path(target))
         archive_path = self.get_archive_path(target)
+        metadata = Metadata.read(self.get_metadata_path(target))
+        if metadata.target_name != target.name or metadata.target_checksum != target.checksum_value:
+            raise CacheSecurityError("Cache metadata does not match the requested target")
+        if target.expected_archive_checksum is not None and metadata.file_checksum != target.expected_archive_checksum:
+            raise CacheSecurityError("Cache archive does not match its commit index")
         size = os.path.getsize(archive_path)
         logger.info(f"正在从本地加载 Target {target.name} 的缓存（大小：{format_size(size)}）...")
         try:
-            Archiver.extract(archive_path)
+            Archiver.extract(
+                archive_path,
+                outputs=target.outputs.paths,
+                expected_checksum=metadata.file_checksum,
+                limits=self._config.cache_limits,
+            )
         except zstd.ZstdError as e:
             raise CacheCorruptionError(f"缓存归档解压失败：{archive_path}") from e
         metadata_path = self.get_metadata_path(target)
@@ -91,6 +117,7 @@ class TargetCacheBackendTypeLocal:
             self.get_metadata_path(target),
             target_checksum=target.checksum_value,
             commit_sha=CIEnvironment().commit_sha,
+            target_name=target.name,
         )
         # Checksummer.generate(
         #     self.get_archive_path(target), self.get_metadata_path(target)
@@ -150,7 +177,7 @@ class TargetCacheBackendTypeCloud:
     def __init__(self, config: Config, app_name: str) -> None:
         self._config: Config = config
         self._app_name: str = app_name
-        self._cache_base_path: str = os.path.join(".quack-cache", app_name)
+        self._cache_base_path: str = os.path.join(".quack-cache-v2", app_name)
         self._local_backend: TargetCacheBackendTypeLocal | None = None
         self._cloud_client = None
 
@@ -163,13 +190,9 @@ class TargetCacheBackendTypeCloud:
     @property
     def cloud_client(self):
         if self._cloud_client is None:
-            self._cloud_client = CloudClient(
-                prefix=self._config.cloud.prefix,
-                region=self._config.cloud.region,
-                access_key_id=self._config.cloud.access_key_id,
-                access_key_secret=self._config.cloud.access_key_secret,
-                endpoint=self._config.cloud.endpoint,
-            )
+            if self._config.cache_access == CacheAccess.NONE:
+                raise ConfigError("Remote cache access is disabled")
+            self._cloud_client = CloudClient(self._config.cloud, self._config.cache_limits)
         return self._cloud_client
 
     def get_cache_path(self, target: Target) -> str:
@@ -183,10 +206,10 @@ class TargetCacheBackendTypeCloud:
 
     def get_commit_path(self) -> str:
         commit_sha = CIEnvironment().commit_sha
-        if commit_sha:
+        if commit_sha and len(commit_sha) == 40 and all(c in "0123456789abcdef" for c in commit_sha):
             return os.path.join(self._cache_base_path, "_commits", commit_sha)
         else:
-            return ""
+            raise ConfigError("A full commit SHA is required for cache indexes")
 
     def get_commit_metadata_path(self, target: Target) -> str:
         return os.path.join(self.get_commit_path(), f"{target.name}.json")
@@ -196,6 +219,8 @@ class TargetCacheBackendTypeCloud:
 
     def update_access_time(self, target: Target) -> None:
         """重新上传一次 metadata 文件，来标识其被访问过"""
+        if self._config.cache_access != CacheAccess.READ_WRITE:
+            return
         try:
             self.cloud_client.upload(
                 self.local_backend.get_metadata_path(target),
@@ -218,13 +243,20 @@ class TargetCacheBackendTypeCloud:
         try:
             logger.info(f"正在从云存储加载 Target {target.name} 的缓存...")
             self.cloud_client.download(self.get_archive_path(target), self.local_backend.get_archive_path(target))
-            self.cloud_client.download(self.get_metadata_path(target), self.local_backend.get_metadata_path(target))
+            self.cloud_client.download(
+                self.get_metadata_path(target), self.local_backend.get_metadata_path(target), max_bytes=1024**2
+            )
             self.local_backend.load(target)
-        except CacheCorruptionError:
-            logger.warning(f"云存储中 Target {target.name} 的缓存已损坏，将重新生成")
+        except CloudStorageTransientError:
             shutil.rmtree(self.local_backend.get_cache_path(target), ignore_errors=True)
             raise
-        except CloudStorageTransientError:
+        except CloudStorageError as error:
+            if error.code in ("404", "NoSuchKey", "NotFound"):
+                shutil.rmtree(self.local_backend.get_cache_path(target), ignore_errors=True)
+                raise CacheCorruptionError("Cache archive or metadata is missing") from error
+            raise
+        except CacheCorruptionError:
+            logger.warning(f"云存储中 Target {target.name} 的缓存已损坏，将重新生成")
             shutil.rmtree(self.local_backend.get_cache_path(target), ignore_errors=True)
             raise
         if update_access_time:
@@ -232,12 +264,16 @@ class TargetCacheBackendTypeCloud:
 
     def save(self, target: Target) -> None:
         self.local_backend.save(target)
+        if self._config.cache_access != CacheAccess.READ_WRITE:
+            return
         archive_path = self.get_archive_path(target)
         logger.debug(f"正在上传缓存到云存储路径 {archive_path}...")
         self.cloud_client.upload(self.local_backend.get_archive_path(target), archive_path)
         self.cloud_client.upload(self.local_backend.get_metadata_path(target), self.get_metadata_path(target))
 
     def clear_expired(self) -> None:
+        if self._config.cache_access != CacheAccess.READ_WRITE:
+            raise ConfigError("Clearing remote cache requires read_write access")
         logger.info("清理过期缓存...")
         file_metadatas = self.cloud_client.filter_files(
             self._cache_base_path,
@@ -261,7 +297,7 @@ class TargetCacheBackendTypeDev(TargetCacheBackendTypeCloud):
 
     def __init__(self, config: Config, app_name: str) -> None:
         super().__init__(config, app_name)
-        self._cache_base_path: str = os.path.join(".quack-cache-dev", app_name)
+        self._cache_base_path: str = os.path.join(".quack-cache-dev-v2", app_name)
         self._ci_cloud_backend: TargetCacheBackendTypeCloud = TargetCacheBackendTypeCloud(config, app_name)
 
     @override
@@ -312,7 +348,10 @@ class TargetCache:
     @property
     def backend(self) -> TargetCacheBackendType:
         if self._backend is None:
-            self._backend = self._backend_type(self._config, self._app_name)
+            backend_type = (
+                TargetCacheBackendTypeRaw if self._config.cache_access == CacheAccess.NONE else self._backend_type
+            )
+            self._backend = backend_type(self._config, self._app_name)
         return self._backend
 
     def hit(self) -> bool:

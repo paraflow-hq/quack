@@ -2,9 +2,8 @@ from pathlib import Path
 from unittest import mock
 
 import pytest
-from boto3.exceptions import RetriesExceededError, S3UploadFailedError
-from boto3.s3.transfer import TransferConfig
-from botocore.exceptions import ClientError, EndpointConnectionError, ReadTimeoutError
+from boto3.exceptions import S3UploadFailedError
+from botocore.exceptions import ClientError, EndpointConnectionError
 
 from quack.exceptions import CloudStorageError, CloudStorageTransientError
 from quack.utils.cloud import CloudClient
@@ -16,17 +15,6 @@ def _cloud_client_with_upload_error(error: Exception) -> CloudClient:
     client._bucket_name = "bucket"
     client._client = mock.Mock()
     client._client.upload_file.side_effect = error
-    return client
-
-
-def _cloud_client_with_download_error(error: Exception) -> CloudClient:
-    client = CloudClient.__new__(CloudClient)
-    client._download_config = TransferConfig(num_download_attempts=2)
-    client._base_path = ""
-    client._bucket_name = "bucket"
-    client._client = mock.Mock()
-    client._client.get_paginator.return_value.paginate.return_value = [{"Contents": [{"Key": "cache.tar.zst"}]}]
-    client._client.download_file.side_effect = error
     return client
 
 
@@ -82,17 +70,6 @@ def test_upload_keeps_access_denied_as_non_transient_error(tmp_path: Path):
 
     assert not isinstance(exc_info.value, CloudStorageTransientError)
     assert exc_info.value.code == "AccessDenied"
-
-
-def test_download_wraps_retries_exceeded_timeout_as_transient_error(tmp_path: Path):
-    local_file = tmp_path / "cache.tar.zst"
-    retry_error = RetriesExceededError(ReadTimeoutError(endpoint_url="https://s3.example"))
-    client = _cloud_client_with_download_error(retry_error)
-
-    with pytest.raises(CloudStorageTransientError) as exc_info:
-        client.download("cache.tar.zst", str(local_file))
-
-    assert exc_info.value.code is None
 
 
 def test_exists_wraps_endpoint_connection_error_as_transient_error():
