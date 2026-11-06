@@ -119,9 +119,6 @@ class TargetCacheBackendTypeLocal:
             commit_sha=CIEnvironment().commit_sha,
             target_name=target.name,
         )
-        # Checksummer.generate(
-        #     self.get_archive_path(target), self.get_metadata_path(target)
-        # )
 
     def clear_expired(self) -> None:
         last_cleared_path = os.path.join(self._cache_base_path, "last_cleared")
@@ -150,7 +147,7 @@ class TargetCacheBackendTypeLocal:
                         if not checksum_dir.is_dir():
                             continue
                         # 用 metadata 文件的 mtime 作为最后使用时间；
-                        # 旧版本缓存没有 metadata 文件，则用目录 mtime 兜底
+                        # 保存中断导致 metadata 缺失时，用目录 mtime 兜底
                         metadata_path = checksum_dir / CACHE_METADATA_FILENAME
                         if metadata_path.exists():
                             last_used = datetime.fromtimestamp(metadata_path.stat().st_mtime)
@@ -289,7 +286,7 @@ class TargetCacheBackendTypeCloud:
 
 
 class TargetCacheBackendTypeDev(TargetCacheBackendTypeCloud):
-    """本地开发使用该 Backend，使用专用云存储目录，但获取缓存时会先尝试从 CI 云存储加载"""
+    """优先读取同一存储根的 cloud 缓存前缀，未命中时读取 dev 前缀。"""
 
     NAME: str = "dev"
 
