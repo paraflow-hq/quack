@@ -2,17 +2,18 @@
 
 from __future__ import annotations
 
-import json
 import sys
 from subprocess import CalledProcessError
 
 from loguru import logger
 
 from quack.cache import TargetCacheBackendType, TargetCacheBackendTypeCloud
-from quack.config import Config
+from quack.config import CacheAccess, Config
+from quack.exceptions import CacheSecurityError, ConfigError
 from quack.models.target import TargetExecutionMode
 from quack.spec import Spec
 from quack.utils.ci_environment import CIEnvironment
+from quack.utils.metadata import Metadata
 
 
 def execute_script(spec: Spec, name: str, arguments: list[str]) -> None:
@@ -43,14 +44,21 @@ def execute_target(
         logger.critical(f"未找到 Target {name}")
         sys.exit(1)
 
-    cloud_backend = TargetCacheBackendTypeCloud(config, app_name)
-    commit_metadata_path = cloud_backend.get_commit_metadata_path(target)
+    remote_enabled = config.cache in ("cloud", "dev") and config.cache_access != CacheAccess.NONE
     if mode == TargetExecutionMode.LOAD_ONLY:
+        if not remote_enabled:
+            raise ConfigError("load-only requires an enabled remote cache")
+        cloud_backend = TargetCacheBackendTypeCloud(config, app_name)
+        commit_metadata_path = cloud_backend.get_commit_metadata_path(target)
         metadata = cloud_backend.cloud_client.read(commit_metadata_path)
         if metadata is None:
             logger.error(f"加载失败，未找到 Target {name} 的缓存")
             sys.exit(1)
-        target.checksum_value = json.loads(metadata)["target_checksum"]
+        index = Metadata.parse(metadata)
+        if index.target_name != target.name or index.commit_sha != CIEnvironment().commit_sha:
+            raise CacheSecurityError("Cache index does not match the requested target and commit")
+        target.checksum_value = index.target_checksum
+        target.expected_archive_checksum = index.file_checksum
 
     try:
         target.execute(config, app_name, cache_backend, mode)
@@ -59,7 +67,14 @@ def execute_target(
         sys.exit(1)
 
     # 记录成功执行的 target metadata，方便根据 commit sha 进行 load
-    if config.save_for_load and CIEnvironment.is_ci:
+    if (
+        config.save_for_load
+        and CIEnvironment().is_ci
+        and remote_enabled
+        and config.cache_access == CacheAccess.READ_WRITE
+        and mode == TargetExecutionMode.NORMAL
+    ):
+        cloud_backend = TargetCacheBackendTypeCloud(config, app_name)
         cloud_backend.cloud_client.upload(
             cloud_backend.local_backend.get_metadata_path(target),
             cloud_backend.get_commit_metadata_path(target),
