@@ -9,6 +9,7 @@ import os
 import shutil
 from datetime import datetime, timedelta
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import final, override
 
 import zstandard as zstd
@@ -201,15 +202,46 @@ class TargetCacheBackendTypeCloud:
     def get_metadata_path(self, target: Target) -> str:
         return f"{self.get_cache_path(target)}/{CACHE_METADATA_FILENAME}"
 
-    def get_commit_path(self) -> str:
-        commit_sha = CIEnvironment().commit_sha
-        if commit_sha and len(commit_sha) == 40 and all(c in "0123456789abcdef" for c in commit_sha):
-            return os.path.join(self._cache_base_path, "_commits", commit_sha)
-        else:
+    def get_commit_metadata_path(self, target: Target, commit_sha: str) -> str:
+        if len(commit_sha) != 40 or any(c not in "0123456789abcdef" for c in commit_sha):
             raise ConfigError("A full commit SHA is required for cache indexes")
+        return f"{self._cache_base_path}/_commits/{commit_sha}/{target.name}.json"
 
-    def get_commit_metadata_path(self, target: Target) -> str:
-        return os.path.join(self.get_commit_path(), f"{target.name}.json")
+    def _commit_archive_path(self, index: Metadata) -> str:
+        return f"{self._cache_base_path}/_commit-archives/{index.file_checksum}.tar.zst"
+
+    def publish_commit(self, target: Target, commit_sha: str) -> None:
+        index_path = self.get_commit_metadata_path(target, commit_sha)
+        with TemporaryDirectory() as staging:
+            archive = str(Path(staging) / "archive.tar.zst")
+            # Shared local cache files can change between this job's build and publication.
+            Archiver.archive(target.outputs.paths, archive)
+            with open(archive, "rb") as source:
+                digest = hashlib.file_digest(source, "sha256").hexdigest()
+            index = Metadata(
+                format_version=3,
+                target_name=target.name,
+                target_checksum=target.checksum_value,
+                commit_sha=commit_sha,
+                file_checksum=digest,
+            )
+            archive_path = self._commit_archive_path(index)
+            if not self.cloud_client.exists(archive_path):
+                self.cloud_client.upload(archive, archive_path)
+            index_file = Path(staging) / "index.json"
+            _ = index_file.write_text(index.model_dump_json(), encoding="utf-8")
+            self.cloud_client.upload(str(index_file), index_path)
+
+    def restore_commit(self, target: Target, index: Metadata) -> None:
+        with TemporaryDirectory() as staging:
+            archive = str(Path(staging) / "archive.tar.zst")
+            self.cloud_client.download(self._commit_archive_path(index), archive)
+            Archiver.extract(
+                archive,
+                outputs=target.outputs.paths,
+                expected_checksum=index.file_checksum,
+                limits=self._config.cache_limits,
+            )
 
     def exists(self, target: Target) -> bool:
         return self.cloud_client.exists(self.get_metadata_path(target))

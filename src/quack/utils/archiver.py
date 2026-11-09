@@ -6,6 +6,7 @@ import fnmatch
 import glob
 import hashlib
 import os
+import re
 import shutil
 import stat
 import tarfile
@@ -20,6 +21,9 @@ import zstandard as zstd
 
 from quack.config import CacheLimits
 from quack.exceptions import CacheSecurityError
+
+PAX_RECORD = re.compile(rb"([1-9][0-9]{0,6}) ([a-z]+)=")
+PAX_FIELDS = {b"path", b"uid", b"gid", b"uname", b"gname", b"mtime", b"size", b"hdrcharset"}
 
 
 class Archiver:
@@ -153,27 +157,61 @@ class Archiver:
 
     @staticmethod
     def _validate_headers(path: Path, limits: CacheLimits) -> None:
-        # Bound extension headers before tarfile allocates their PAX/long-name payloads.
         with path.open("rb") as stream:
             count = 0
-            while block := stream.read(512):
-                if block == b"\0" * 512:
-                    return
+            pending_extension = False
+            pax_size = None
+            while (block := stream.read(512)) and block != b"\0" * 512:
                 try:
                     header = tarfile.TarInfo.frombuf(block, "utf-8", "surrogateescape")
                 except tarfile.HeaderError as error:
                     raise CacheSecurityError("Invalid cache tar header") from error
+                size = header.size
+                if header.type in (tarfile.XHDTYPE, tarfile.GNUTYPE_LONGNAME):
+                    if pending_extension or not 0 < size <= 1024**2:
+                        raise CacheSecurityError("Cache tar extension exceeds its size or nesting limit")
+                    pending_extension = True
+                    if header.type == tarfile.XHDTYPE:
+                        pax_size = Archiver._read_pax_size(stream.read(size))
+                        _ = stream.seek(-size % 512, os.SEEK_CUR)
+                    else:
+                        _ = stream.seek(((size + 511) // 512) * 512, os.SEEK_CUR)
+                    continue
+                if header.type not in (tarfile.REGTYPE, tarfile.AREGTYPE, tarfile.CONTTYPE, tarfile.DIRTYPE):
+                    raise CacheSecurityError("Cache archive contains an unsupported tar member")
+                # tarfile follows the effective size, including a local PAX override.
+                size = pax_size if pax_size is not None else size
                 count += 1
-                extension = header.type in (
-                    tarfile.XHDTYPE,
-                    tarfile.XGLTYPE,
-                    tarfile.GNUTYPE_LONGNAME,
-                    tarfile.GNUTYPE_LONGLINK,
-                )
-                limit = min(limits.max_file_bytes, 1024**2) if extension else limits.max_file_bytes
-                if count > limits.max_entries * 2 or header.size < 0 or header.size > limit:
+                if header.isdir() and size != 0:
+                    raise CacheSecurityError("Cache tar directory has a nonzero size")
+                pending_extension = False
+                pax_size = None
+                if count > limits.max_entries or not 0 <= size <= limits.max_file_bytes:
                     raise CacheSecurityError("Cache archive exceeds its header or file limit")
-                _ = stream.seek(((header.size + 511) // 512) * 512, os.SEEK_CUR)
+                _ = stream.seek(((size + 511) // 512) * 512, os.SEEK_CUR)
+            if pending_extension or not block:
+                raise CacheSecurityError("Cache archive has an incomplete tar member or terminator")
+
+    @staticmethod
+    def _read_pax_size(payload: bytes) -> int | None:
+        # Only accept local PAX fields emitted by our writer. Sparse and global extensions
+        # have their own layout rules and cannot be checked with ordinary member offsets.
+        size = None
+        offset = 0
+        while offset < len(payload):
+            record = PAX_RECORD.match(payload, offset)
+            if record is None or record[2] not in PAX_FIELDS:
+                raise CacheSecurityError("Unsupported cache tar PAX record")
+            end = offset + int(record[1])
+            if not record.end() < end <= len(payload) or payload[end - 1] != 10:
+                raise CacheSecurityError("Invalid cache tar PAX record length")
+            if record[2] == b"size":
+                value = payload[record.end() : end - 1]
+                if not value.isdigit() or len(value) > 20:
+                    raise CacheSecurityError("Invalid cache tar PAX size")
+                size = int(value)
+            offset = end
+        return size
 
     @staticmethod
     def _validate_destination(root: Path, name: str) -> None:

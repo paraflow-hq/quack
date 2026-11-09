@@ -17,6 +17,9 @@ from urllib.parse import parse_qs, unquote, urlsplit
 import pytest
 import zstandard
 
+from quack.exceptions import CacheSecurityError
+from quack.utils.archiver import Archiver
+
 SOURCE = os.environ.get("QUACK_TEST_SOURCE", str(Path(__file__).resolve().parents[1]))
 SHA = "a" * 40
 CHECKSUM = "b" * 64
@@ -140,7 +143,7 @@ targets:
       paths: [dist]
     operations:
       build:
-        command: mkdir -p dist && printf built > dist/result.txt && printf ran >> builds.txt
+        command: mkdir -p dist && printf '%s' "${FIXTURE_OUTPUT:-built}" > dist/result.txt && printf ran >> builds.txt
 """)
     env = {
         "PATH": os.environ["PATH"],
@@ -310,11 +313,15 @@ def test_security_local_or_disabled_cache_never_publishes_a_commit_index(tmp_pat
     assert store.requests == []
 
 
-def test_security_writer_and_cold_read_only_consumer_share_verified_v2_artifact(tmp_path):
+def test_security_writer_and_cold_read_only_consumer_share_verified_commit_artifact(tmp_path):
     with s3_server(writable=True) as (store, endpoint):
         writer = run_cli(tmp_path, "demo:build", endpoint=endpoint)
         assert writer.returncode == 0, writer.stderr
-        assert json.loads(store.objects[f"{ROOT}/_commits/{SHA}/demo:build.json"])["format_version"] == 2
+        index_key = f"{ROOT}/_commits/{SHA}/demo:build.json"
+        index = json.loads(store.objects[index_key])
+        assert index["format_version"] == 3
+        puts = [key for method, key, _ in store.requests if method == "PUT"]
+        assert puts[-2:] == [f"{ROOT}/_commit-archives/{index['file_checksum']}.tar.zst", index_key]
         shutil.rmtree(tmp_path / "cache")
         (tmp_path / "dist/result.txt").unlink()
         store.requests.clear()
@@ -325,6 +332,71 @@ def test_security_writer_and_cold_read_only_consumer_share_verified_v2_artifact(
         assert not any(method == "PUT" for method, _, _ in store.requests)
     assert (tmp_path / "dist/result.txt").read_text() == "built"
     assert (tmp_path / "builds.txt").read_text() == "ran"
+
+
+def test_security_same_target_checksum_keeps_both_commit_archives(tmp_path):
+    other_sha = "b" * 40
+    with s3_server(writable=True) as (store, endpoint):
+        first = run_cli(tmp_path / "first", "demo:build", endpoint=endpoint)
+        assert first.returncode == 0, first.stderr
+        first_index = json.loads(store.objects[f"{ROOT}/_commits/{SHA}/demo:build.json"])
+        # Model two producers that both missed the normal cache before either published it.
+        metadata_key = next(key for key in store.objects if key.endswith("/_metadata.json"))
+        del store.objects[metadata_key]
+        second = run_cli(
+            tmp_path / "second",
+            "demo:build",
+            endpoint=endpoint,
+            settings={"GITHUB_SHA": other_sha, "FIXTURE_OUTPUT": "different"},
+        )
+        assert second.returncode == 0, second.stderr
+        second_index = json.loads(store.objects[f"{ROOT}/_commits/{other_sha}/demo:build.json"])
+        assert first_index["target_checksum"] == second_index["target_checksum"]
+        assert first_index["file_checksum"] != second_index["file_checksum"]
+
+        for commit, expected in ((SHA, "built"), (other_sha, "different")):
+            reader = tmp_path / commit
+            result = run_cli(
+                reader,
+                "--load-only",
+                "demo:build",
+                endpoint=endpoint,
+                settings={"GITHUB_SHA": commit, "QUACK_CACHE_ACCESS": "read"},
+            )
+            assert result.returncode == 0, result.stderr
+            assert (reader / "dist/result.txt").read_text() == expected
+
+
+def test_security_pax_size_override_cannot_hide_an_oversized_header(tmp_path, monkeypatch):
+    entry = tarfile.TarInfo("dist/result.txt")
+    entry.pax_headers = {"size": "512"}
+    oversized = tarfile.TarInfo("pax")
+    oversized.type = tarfile.XHDTYPE
+    oversized.size = 1024**2 + 512
+    # The raw size is zero. The old preflight stopped at the zero-filled data block.
+    raw_tar = entry.tobuf(tarfile.PAX_FORMAT) + bytes(512) + oversized.tobuf(tarfile.USTAR_FORMAT)
+    data = zstandard.ZstdCompressor().compress(raw_tar)
+    path = tmp_path / "malicious.tar.zst"
+    path.write_bytes(data)
+
+    def fail_if_parsed(*_args, **_kwargs):
+        pytest.fail("Unsafe archive reached the tar parser")
+
+    monkeypatch.setattr(tarfile, "open", fail_if_parsed)
+    with pytest.raises(CacheSecurityError, match="extension exceeds"):
+        Archiver.extract(str(path), str(tmp_path), outputs=["dist"], expected_checksum=hashlib.sha256(data).hexdigest())
+
+
+def test_security_pax_size_override_restores_valid_members(tmp_path):
+    entry = tarfile.TarInfo(f"dist/{'a' * 120}.txt")
+    entry.pax_headers = {"size": "512"}
+    payload = b"a" * 512
+    raw_tar = entry.tobuf(tarfile.PAX_FORMAT) + payload + bytes(1024)
+    data = zstandard.ZstdCompressor().compress(raw_tar)
+    path = tmp_path / "valid.tar.zst"
+    path.write_bytes(data)
+    Archiver.extract(str(path), str(tmp_path), outputs=["dist"], expected_checksum=hashlib.sha256(data).hexdigest())
+    assert (tmp_path / entry.name).read_bytes() == payload
 
 
 def test_security_r2_rejects_missing_endpoint_without_network_access(tmp_path):

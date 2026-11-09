@@ -44,19 +44,23 @@ def execute_target(
         logger.critical(f"未找到 Target {name}")
         sys.exit(1)
 
+    ci = CIEnvironment()
     remote_enabled = config.cache in ("cloud", "dev") and config.cache_access != CacheAccess.NONE
     if mode == TargetExecutionMode.LOAD_ONLY:
         if not remote_enabled:
             raise ConfigError("load-only requires an enabled remote cache")
         cloud_backend = TargetCacheBackendTypeCloud(config, app_name)
-        commit_metadata_path = cloud_backend.get_commit_metadata_path(target)
+        commit_metadata_path = cloud_backend.get_commit_metadata_path(target, ci.commit_sha)
         metadata = cloud_backend.cloud_client.read(commit_metadata_path)
         if metadata is None:
             logger.error(f"加载失败，未找到 Target {name} 的缓存")
             sys.exit(1)
         index = Metadata.parse(metadata)
-        if index.target_name != target.name or index.commit_sha != CIEnvironment().commit_sha:
+        if index.target_name != target.name or index.commit_sha != ci.commit_sha:
             raise CacheSecurityError("Cache index does not match the requested target and commit")
+        if index.format_version == 3:
+            cloud_backend.restore_commit(target, index)
+            return
         target.checksum_value = index.target_checksum
         target.expected_archive_checksum = index.file_checksum
 
@@ -69,13 +73,9 @@ def execute_target(
     # 记录成功执行的 target metadata，方便根据 commit sha 进行 load
     if (
         config.save_for_load
-        and CIEnvironment().is_ci
+        and ci.is_ci
         and remote_enabled
         and config.cache_access == CacheAccess.READ_WRITE
         and mode == TargetExecutionMode.NORMAL
     ):
-        cloud_backend = TargetCacheBackendTypeCloud(config, app_name)
-        cloud_backend.cloud_client.upload(
-            cloud_backend.local_backend.get_metadata_path(target),
-            cloud_backend.get_commit_metadata_path(target),
-        )
+        TargetCacheBackendTypeCloud(config, app_name).publish_commit(target, ci.commit_sha)

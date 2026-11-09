@@ -15,7 +15,7 @@ from quack.utils.checksummer import generate_sha256sum
 
 
 class Metadata(BaseModel):
-    format_version: Literal[2] = 2
+    format_version: Literal[2, 3] = 2
     target_name: str
     target_checksum: str = Field(pattern=r"^[a-f0-9]{64}$")
     file_checksum: str = Field(pattern=r"^[a-f0-9]{64}$")
@@ -25,7 +25,7 @@ class Metadata(BaseModel):
     def parse(cls, text: str) -> Metadata:
         try:
             data = json.loads(text)
-            if not isinstance(data, dict) or data.get("format_version") != 2:
+            if not isinstance(data, dict) or data.get("format_version") not in (2, 3):
                 raise ValueError("Unsupported cache format")
             return cls.model_validate(data)
         except (ValueError, ValidationError):
