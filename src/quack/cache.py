@@ -82,13 +82,17 @@ class TargetCacheBackendTypeLocal:
     def exists(self, target: Target) -> bool:
         return os.path.isfile(self.get_metadata_path(target)) and os.path.isfile(self.get_archive_path(target))
 
-    def load(self, target: Target) -> None:
-        archive_path = self.get_archive_path(target)
+    def read_metadata(self, target: Target) -> Metadata:
         metadata = Metadata.read(self.get_metadata_path(target))
         if metadata.target_name != target.name or metadata.target_checksum != target.checksum_value:
             raise CacheSecurityError("Cache metadata does not match the requested target")
         if target.expected_archive_checksum is not None and metadata.file_checksum != target.expected_archive_checksum:
             raise CacheSecurityError("Cache archive does not match its commit index")
+        return metadata
+
+    def load(self, target: Target) -> None:
+        archive_path = self.get_archive_path(target)
+        metadata = self.read_metadata(target)
         size = os.path.getsize(archive_path)
         logger.info(f"正在从本地加载 Target {target.name} 的缓存（大小：{format_size(size)}）...")
         try:
@@ -196,8 +200,12 @@ class TargetCacheBackendTypeCloud:
     def get_cache_path(self, target: Target) -> str:
         return f"{self._cache_base_path}/{target.cache_path}"
 
-    def get_archive_path(self, target: Target) -> str:
-        return f"{self.get_cache_path(target)}/{target.cache_archive_filename}"
+    def get_archive_path(self, target: Target, metadata: Metadata) -> str:
+        if target.expected_archive_checksum is not None:
+            # Format v2 commit indexes predate content addressing and name the target-scoped archive.
+            return f"{self.get_cache_path(target)}/{target.cache_archive_filename}"
+        # Producers share the checksum directory, so each archive gets its own digest-named object.
+        return f"{self.get_cache_path(target)}/{metadata.file_checksum}.tar.zst"
 
     def get_metadata_path(self, target: Target) -> str:
         return f"{self.get_cache_path(target)}/{CACHE_METADATA_FILENAME}"
@@ -251,6 +259,10 @@ class TargetCacheBackendTypeCloud:
         if self._config.cache_access != CacheAccess.READ_WRITE:
             return
         try:
+            metadata = self.local_backend.read_metadata(target)
+            # A local copy may come from a producer whose archive never reached this storage domain.
+            if not self.cloud_client.exists(self.get_archive_path(target, metadata)):
+                return
             self.cloud_client.upload(
                 self.local_backend.get_metadata_path(target),
                 self.get_metadata_path(target),
@@ -269,11 +281,17 @@ class TargetCacheBackendTypeCloud:
                 logger.warning("本地缓存已损坏，从云存储重新下载")
                 shutil.rmtree(self.local_backend.get_cache_path(target), ignore_errors=True)
 
+        # Metadata now lands first; a stale local archive must not pair with it if the archive download fails.
+        shutil.rmtree(self.local_backend.get_cache_path(target), ignore_errors=True)
         try:
             logger.info(f"正在从云存储加载 Target {target.name} 的缓存...")
-            self.cloud_client.download(self.get_archive_path(target), self.local_backend.get_archive_path(target))
+            # Metadata names the exact archive, so a concurrent producer cannot swap the bytes between the two reads.
             self.cloud_client.download(
                 self.get_metadata_path(target), self.local_backend.get_metadata_path(target), max_bytes=1024**2
+            )
+            metadata = self.local_backend.read_metadata(target)
+            self.cloud_client.download(
+                self.get_archive_path(target, metadata), self.local_backend.get_archive_path(target)
             )
             self.local_backend.load(target)
         except CloudStorageTransientError:
@@ -295,8 +313,9 @@ class TargetCacheBackendTypeCloud:
         self.local_backend.save(target)
         if self._config.cache_access != CacheAccess.READ_WRITE:
             return
-        archive_path = self.get_archive_path(target)
+        archive_path = self.get_archive_path(target, self.local_backend.read_metadata(target))
         logger.debug(f"正在上传缓存到云存储路径 {archive_path}...")
+        # Publish the archive before the metadata that names it.
         self.cloud_client.upload(self.local_backend.get_archive_path(target), archive_path)
         self.cloud_client.upload(self.local_backend.get_metadata_path(target), self.get_metadata_path(target))
 

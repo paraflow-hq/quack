@@ -45,17 +45,20 @@ class Store:
         self.archive_status = 200
 
     def seed(self, data: bytes, *, digest: str | None = None, checksum: str = CHECKSUM):
+        file_checksum = digest or hashlib.sha256(data).hexdigest()
         metadata = json.dumps(
             {
                 "format_version": 2,
                 "target_name": "demo:build",
                 "target_checksum": checksum,
-                "file_checksum": digest or hashlib.sha256(data).hexdigest(),
+                "file_checksum": file_checksum,
                 "commit_sha": SHA,
             }
         ).encode()
         key = f"{ROOT}/demo:build/{checksum[:2]}/{checksum[2:]}"
+        # Format v2 commit indexes read the target-named archive; normal cache reads the object named by its digest.
         self.objects[f"{key}/demo:build.tar.zst"] = data
+        self.objects[f"{key}/{file_checksum}.tar.zst"] = data
         self.objects[f"{key}/_metadata.json"] = metadata
         self.objects[f"{ROOT}/_commits/{SHA}/demo:build.json"] = metadata
         # The same fixture can reproduce the pre-v2 implementation's failures.
@@ -365,6 +368,80 @@ def test_security_same_target_checksum_keeps_both_commit_archives(tmp_path):
             )
             assert result.returncode == 0, result.stderr
             assert (reader / "dist/result.txt").read_text() == expected
+
+
+def publish_competing_normal_cache_entries(tmp_path: Path, store: Store, endpoint: str) -> tuple[str, bytes]:
+    """Model two producers that both missed the normal cache and published different archive bytes."""
+    first = run_cli(tmp_path / "first", "demo:build", endpoint=endpoint)
+    assert first.returncode == 0, first.stderr
+    metadata_key = next(key for key in store.objects if key.endswith("/_metadata.json"))
+    first_metadata = store.objects.pop(metadata_key)
+    second = run_cli(tmp_path / "second", "demo:build", endpoint=endpoint, settings={"FIXTURE_OUTPUT": "different"})
+    assert second.returncode == 0, second.stderr
+    assert store.objects[metadata_key] != first_metadata
+    return metadata_key, first_metadata
+
+
+def test_security_access_time_refresh_keeps_shared_cache_entry_restorable(tmp_path):
+    with s3_server(writable=True) as (store, endpoint):
+        publish_competing_normal_cache_entries(tmp_path, store, endpoint)
+        # The first producer reuses its local archive; refreshing the shared entry must not describe other bytes.
+        refresh = run_cli(tmp_path / "first", "demo:build", endpoint=endpoint)
+        assert refresh.returncode == 0, refresh.stderr
+        reader = run_cli(tmp_path / "reader", "demo:build", endpoint=endpoint, settings={"QUACK_CACHE_ACCESS": "read"})
+    assert reader.returncode == 0, reader.stderr
+    assert not (tmp_path / "reader/builds.txt").exists()
+    assert (tmp_path / "reader/dist/result.txt").read_text() in ("built", "different")
+
+
+def test_security_interleaved_producers_keep_shared_cache_entry_restorable(tmp_path):
+    with s3_server(writable=True) as (store, endpoint):
+        metadata_key, first_metadata = publish_competing_normal_cache_entries(tmp_path, store, endpoint)
+        # The first producer's archive upload finished before the second one, but its metadata finished last.
+        store.objects[metadata_key] = first_metadata
+        reader = run_cli(tmp_path / "reader", "demo:build", endpoint=endpoint, settings={"QUACK_CACHE_ACCESS": "read"})
+    assert reader.returncode == 0, reader.stderr
+    assert not (tmp_path / "reader/builds.txt").exists()
+    assert (tmp_path / "reader/dist/result.txt").read_text() == "built"
+
+
+def test_security_local_hit_does_not_publish_metadata_for_missing_remote_archive(tmp_path):
+    with s3_server(writable=True) as (store, endpoint):
+        metadata_key, first_metadata = publish_competing_normal_cache_entries(tmp_path, store, endpoint)
+        second_metadata = store.objects[metadata_key]
+        # The first producer's archive is gone remotely, while its local copy still satisfies the hit.
+        first_digest = json.loads(first_metadata)["file_checksum"]
+        del store.objects[f"{metadata_key.removesuffix('_metadata.json')}{first_digest}.tar.zst"]
+        (tmp_path / "first/dist/result.txt").unlink()
+        store.requests.clear()
+        refresh = run_cli(
+            tmp_path / "first", "demo:build", endpoint=endpoint, settings={"QUACK_SAVE_FOR_LOAD": "false"}
+        )
+        assert refresh.returncode == 0, refresh.stderr
+        assert (tmp_path / "first/dist/result.txt").read_text() == "built"
+        assert (tmp_path / "first/builds.txt").read_text() == "ran"
+        assert not any(method == "PUT" for method, _, _ in store.requests)
+        assert store.objects[metadata_key] == second_metadata
+        reader = run_cli(tmp_path / "reader", "demo:build", endpoint=endpoint, settings={"QUACK_CACHE_ACCESS": "read"})
+    assert reader.returncode == 0, reader.stderr
+    assert not (tmp_path / "reader/builds.txt").exists()
+    assert (tmp_path / "reader/dist/result.txt").read_text() == "different"
+
+
+def test_security_mismatched_target_named_cache_entry_is_rebuilt_and_republished(tmp_path):
+    checksum = hashlib.sha256(repr([]).encode()).hexdigest()
+    digest = "0" * 64
+    with s3_server(writable=True) as (store, endpoint):
+        # An entry from the target-named layout whose metadata describes another producer's archive.
+        store.seed(archive({"dist/result.txt": b"cached"}), digest=digest, checksum=checksum)
+        del store.objects[f"{ROOT}/demo:build/{checksum[:2]}/{checksum[2:]}/{digest}.tar.zst"]
+        writer = run_cli(tmp_path / "writer", "demo:build", endpoint=endpoint)
+        assert writer.returncode == 0, writer.stderr
+        assert (tmp_path / "writer/builds.txt").read_text() == "ran"
+        reader = run_cli(tmp_path / "reader", "demo:build", endpoint=endpoint, settings={"QUACK_CACHE_ACCESS": "read"})
+    assert reader.returncode == 0, reader.stderr
+    assert not (tmp_path / "reader/builds.txt").exists()
+    assert (tmp_path / "reader/dist/result.txt").read_text() == "built"
 
 
 def test_security_pax_size_override_cannot_hide_an_oversized_header(tmp_path, monkeypatch):
